@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#111827" />
+  <title>朋友分帳</title>
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div>
+        <div class="eyebrow">FRIEND SPLIT · SOLO V3</div>
+        <h1>朋友分帳</h1>
+        <p class="muted">以「活動」為單位保存日期、支出、結算、收據與付款證明。</p>
+      </div>
+      <div class="top-actions">
+        <span id="networkBadge" class="badge">檢查網路中…</span>
+        <button id="exportBackupBtn" class="secondary">匯出備份</button>
+        <label class="button-like ghost">匯入備份<input id="importBackupInput" type="file" accept="application/json,.json" hidden /></label>
+        <button id="resetBtn" class="ghost danger">清空資料</button>
+      </div>
+    </header>
+
+    <main class="grid">
+      <section class="card">
+        <div class="section-head"><div><h2>1. 固定朋友名單</h2><p class="muted">名單可跨活動重複使用。</p></div></div>
+        <div class="inline-form"><input id="friendName" placeholder="輸入名字，例如：阿明" /><button id="addFriendBtn">新增</button></div>
+        <div id="friendList" class="chips"></div>
+      </section>
+
+      <section class="card">
+        <div class="section-head"><div><h2>2. 活動紀錄</h2><p class="muted">每次聚餐或旅遊都建立一個活動，日期與帳目不會混在一起。</p></div></div>
+        <div class="activity-create">
+          <label class="field"><span>活動名稱</span><input id="newEventName" placeholder="例如：高雄一日遊" /></label>
+          <div class="expense-grid two-col">
+            <label class="field"><span>開始日期</span><input id="newEventStartDate" type="date" /></label>
+            <label class="field"><span>結束日期（選填）</span><input id="newEventEndDate" type="date" /></label>
+          </div>
+          <label class="field"><span>主要幣別</span><select id="newEventCurrency"></select></label>
+          <button id="createEventBtn">＋ 建立活動</button>
+        </div>
+        <div id="eventList" class="event-list"></div>
+      </section>
+
+      <section id="activeEventCard" class="card card-wide hidden">
+        <div class="section-head event-title-row">
+          <div>
+            <div class="eyebrow">目前活動</div>
+            <h2 id="activeEventTitle"></h2>
+            <p id="activeEventDateText" class="muted"></p>
+          </div>
+          <div class="row-actions compact">
+            <button id="editEventMetaBtn" class="secondary">編輯活動資料</button>
+            <button id="deleteEventBtn" class="ghost danger">刪除活動</button>
+          </div>
+        </div>
+        <div id="eventMetaEditor" class="option-panel hidden">
+          <div class="expense-grid">
+            <label class="field"><span>活動名稱</span><input id="eventName" /></label>
+            <label class="field"><span>開始日期</span><input id="eventStartDate" type="date" /></label>
+            <label class="field"><span>結束日期</span><input id="eventEndDate" type="date" /></label>
+            <label class="field"><span>主要幣別</span><select id="baseCurrency"></select></label>
+          </div>
+          <div class="row-actions"><button id="saveEventMetaBtn">儲存活動資料</button><button id="cancelEventMetaBtn" class="ghost">取消</button></div>
+        </div>
+
+        <h3>本次出席者</h3>
+        <div class="row-actions"><button id="selectAllAttendeesBtn" class="secondary">全選</button><button id="clearAttendeesBtn" class="ghost">全部取消</button></div>
+        <div id="attendeeList" class="check-list"></div>
+      </section>
+
+      <section id="expenseFormCard" class="card card-wide hidden">
+        <div class="section-head"><div><h2 id="expenseFormTitle">3. 新增消費</h2><p class="muted">金額欄可直接算式，例如 <code>240*2+259*2+268</code>。</p></div></div>
+        <div class="expense-grid">
+          <label class="field"><span>項目</span><input id="expenseTitle" placeholder="例如：晚餐" /></label>
+          <label class="field"><span>金額 / 算式</span><input id="expenseAmount" inputmode="decimal" placeholder="5500 或 240*2+259*2+268" /></label>
+          <label class="field"><span>付款人</span><select id="payerSelect"></select></label>
+          <label class="field"><span>分類</span><select id="categorySelect"></select></label>
+        </div>
+        <div class="expense-grid two-col">
+          <label class="field"><span>消費日期時間</span><input id="expenseDateTime" type="datetime-local" /></label>
+          <label class="field"><span>收據照片（選填）</span><input id="receiptInput" type="file" accept="image/*" /><small id="receiptHint" class="muted"></small></label>
+        </div>
+
+        <div class="option-panel">
+          <label class="toggle-row"><input id="foreignCurrencyToggle" type="checkbox" /><span><strong>這筆使用其他幣別</strong><small>一般台灣消費不用勾；出國時才開。</small></span></label>
+          <div id="foreignCurrencyArea" class="expense-grid two-col hidden">
+            <label class="field"><span>消費幣別</span><select id="expenseCurrency"></select></label>
+            <label class="field"><span>匯率（1 消費幣別 = ? 主要幣別）</span><div class="inline-form"><input id="exchangeRate" type="number" min="0" step="0.000001" placeholder="自動查詢" /><button id="refreshRateBtn" type="button" class="secondary">查最新</button></div><small id="rateStatus" class="muted"></small></label>
+          </div>
+        </div>
+
+        <div class="option-panel">
+          <label class="toggle-row"><input id="discountToggle" type="checkbox" /><span><strong>有折扣 / 優惠券</strong><small>可由全體共享，也可只回饋給指定一人或多人。</small></span></label>
+          <div id="discountArea" class="hidden">
+            <div class="expense-grid three-col">
+              <label class="field"><span>折扣輸入方式</span><select id="discountType"><option value="amount">固定金額</option><option value="percent">百分比</option></select></label>
+              <label class="field"><span id="discountValueLabel">折扣金額</span><input id="discountValue" inputmode="decimal" placeholder="例如 61" /></label>
+              <label class="field"><span>折扣分配</span><select id="discountMode"><option value="all_proportional">全體－依原始消費比例</option><option value="all_equal">全體－平均分</option><option value="selected_equal">指定一人 / 多人－平均分</option><option value="custom">自訂每人折扣</option></select></label>
+            </div>
+            <div id="discountRecipientsArea" class="discount-subarea hidden">
+              <strong>享有折扣的人</strong>
+              <div id="discountRecipientList" class="check-list"></div>
+            </div>
+            <div id="customDiscountArea" class="custom-area hidden"></div>
+          </div>
+        </div>
+
+        <div class="option-panel">
+          <label class="toggle-row"><input id="serviceFeeToggle" type="checkbox" /><span><strong>有服務費 / 清潔費</strong><small>依每個人的金額按比例加成。</small></span></label>
+          <div id="serviceFeeArea" class="expense-grid two-col hidden">
+            <label class="field"><span>服務費 %</span><input id="serviceFeePercent" type="number" min="0" max="100" step="0.1" value="10" /></label>
+            <label class="field"><span>服務費計算基準</span><select id="serviceFeeBasis"><option value="before_discount">折扣前金額</option><option value="after_discount">折扣後金額</option></select><small class="muted">像「小計 1230、折扣 61、清潔費 123」請選折扣前。</small></label>
+          </div>
+        </div>
+
+        <label class="field"><span>分攤方式</span><select id="splitMode"><option value="equal">平均分攤</option><option value="custom">自訂每人原始金額</option></select></label>
+        <div class="participants-toolbar"><strong>參與這筆消費的人</strong><div class="row-actions"><button id="expenseSelectDefaultBtn" class="secondary" type="button">套用本次出席</button><button id="expenseSelectAllBtn" class="ghost" type="button">全選所有朋友</button></div></div>
+        <div id="expenseParticipantList" class="check-list"></div>
+        <div id="customAmountArea" class="custom-area hidden"></div>
+        <div class="preview-box" id="expensePreview">請輸入金額並選擇參與者。</div>
+        <div class="row-actions form-actions"><button id="addExpenseBtn" class="primary-grow">加入這筆消費</button><button id="cancelEditExpenseBtn" class="ghost hidden">取消編輯</button></div>
+      </section>
+
+      <section id="expenseHistoryCard" class="card card-wide hidden">
+        <div class="section-head"><div><h2>4. 消費紀錄</h2><p class="muted">可編輯既有消費，日期、分攤、服務費、收據都能修改。</p></div></div>
+        <div id="expenseList" class="expense-list empty-state">目前還沒有任何消費。</div>
+      </section>
+
+      <section id="settlementCard" class="card card-wide hidden">
+        <div class="section-head"><div><h2>5. 結算與付款</h2><p class="muted">已付款不會消失，而是移到「已付款紀錄」保留時間與付款證明。</p></div></div>
+        <div id="balanceSummary" class="balance-grid"></div>
+        <div class="settlement-mode-panel">
+          <label class="field"><span>結算方式</span><select id="settlementMode"><option value="optimized">最少轉帳（自動重新配對）</option><option value="direct">保留原始債務關係（誰替誰墊就還給誰）</option></select></label>
+          <small class="muted">已付款紀錄在兩種模式都會扣除，不會因切換模式要求重複付款。</small>
+        </div>
+        <h3 class="settlement-title">待付款</h3>
+        <div id="settlementList" class="settlement-list empty-state">新增消費後會自動計算。</div>
+        <h3 class="settlement-title">已付款紀錄</h3>
+        <div id="paidHistoryList" class="settlement-list empty-state">目前沒有已付款紀錄。</div>
+      </section>
+
+      <section id="statsCard" class="card card-wide hidden">
+        <div class="section-head"><div><h2>6. 支出分析</h2><p class="muted">只統計目前選取的活動。</p></div></div>
+        <div id="statsSummary" class="stats-summary"></div>
+        <div id="categoryStats" class="stats-bars"></div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="paymentDialog">
+    <form method="dialog" class="dialog-card">
+      <h3>標記已付款</h3>
+      <p id="paymentDialogText" class="muted"></p>
+      <label class="field"><span>付款證明截圖（選填）</span><input id="paymentProofInput" type="file" accept="image/*" /></label>
+      <div class="dialog-actions"><button value="cancel" class="ghost">取消</button><button id="confirmPaymentBtn" value="default">確認已付款</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="imageDialog"><div class="image-dialog-card"><button id="closeImageDialog" class="ghost">關閉</button><img id="imagePreview" alt="附件預覽" /></div></dialog>
+
+  <script src="app.js"></script>
+</body>
+</html>
