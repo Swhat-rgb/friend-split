@@ -3,9 +3,8 @@ import {
   getAuth,
   GoogleAuthProvider,
   onAuthStateChanged,
-  signInWithRedirect,
-  getRedirectResult,
-  signOut,
+  signInWithPopup,
+    signOut,
   setPersistence,
   browserLocalPersistence
 } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
@@ -43,7 +42,7 @@ try {
 const provider = new GoogleAuthProvider();
 provider.setCustomParameters({ prompt: "select_account" });
 
-const GROUP_STORAGE_KEY = "friendSplitSharedActiveGroupV6";
+const GROUP_STORAGE_KEY = "friendSplitSharedActiveGroupV6_1";
 let currentUser = null;
 let activeGroupId = localStorage.getItem(GROUP_STORAGE_KEY) || "";
 let activeGroupMeta = null;
@@ -187,7 +186,7 @@ window.addEventListener("friend-split:state-saved",e=>queueGroupState(e.detail?.
 window.addEventListener("online",()=>{if(activeGroupId){status("☁ 已連線，檢查群組同步…","syncing");queueGroupState(api()?.getState(),"back-online")}});
 window.addEventListener("offline",()=>{if(activeGroupId)status("☁ 離線，變更會稍後同步","offline")});
 
-$("googleSignInBtn")?.addEventListener("click",async()=>{try{status("前往 Google 登入…","syncing");await signInWithRedirect(auth,provider)}catch(err){console.error(err);alert("Google 登入失敗：\n"+(err?.message||err))}});
+$("googleSignInBtn")?.addEventListener("click",async()=>{try{status("前往 Google 登入…","syncing");await signInWithPopup(auth,provider)}catch(err){console.error(err);alert("Google 登入失敗：\n"+(err?.message||err))}});
 $("googleSignOutBtn")?.addEventListener("click",async()=>{if(confirm("確定登出？本機資料仍會保留。"))await signOut(auth)});
 $("createGroupBtn")?.addEventListener("click",createGroup);
 $("joinGroupBtn")?.addEventListener("click",joinGroup);
@@ -199,7 +198,7 @@ $("forceCloudUploadBtn")?.addEventListener("click",async()=>{
   initializedForGroup=true; lastUploadedJson=""; await writeGroupState(api()?.getState(),"manual-overwrite"); alert("已上傳本機資料到共享群組。");
 });
 
-try{await setPersistence(auth,browserLocalPersistence);await getRedirectResult(auth)}catch(err){console.warn("Auth init warning",err)}
+try{await setPersistence(auth,browserLocalPersistence)}catch(err){console.warn("Auth persistence warning",err)}
 onAuthStateChanged(auth,user=>{
   currentUser=user; setAuthUi(user); stopGroupListeners();
   if(!user){status("☁ 尚未登入","offline");setGroupUi(null);return;}

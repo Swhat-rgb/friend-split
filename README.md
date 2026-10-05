@@ -32,3 +32,9 @@ V4 全功能 + Firebase Firestore 雲端同步。
 - 任一成員修改帳目後，其他成員近即時同步。
 - 收據與付款證明圖片仍留在各裝置 IndexedDB，尚未跨裝置共享。
 - 上線前請把 firestore-rules-v6.txt 的內容發布到 Firebase Firestore 規則。
+
+
+## V6.1
+- 手機 Google 登入改回 Popup 模式。
+- 保留 Shared V6 的共享群組、邀請碼與即時同步功能。
+- 公司網路若封鎖 Firebase Auth，建議以手機建立/加入群組。
