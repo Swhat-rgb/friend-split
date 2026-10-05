@@ -12,11 +12,17 @@
   <div class="app-shell">
     <header class="topbar">
       <div>
-        <div class="eyebrow">FRIEND SPLIT · SOLO V3</div>
+        <div class="eyebrow">FRIEND SPLIT · CLOUD V5</div>
         <h1>朋友分帳</h1>
         <p class="muted">以「活動」為單位保存日期、支出、結算、收據與付款證明。</p>
       </div>
       <div class="top-actions">
+        <div class="cloud-auth">
+          <span id="cloudStatus" class="badge cloud-status offline">☁ 尚未登入</span>
+          <span id="cloudUserName" class="cloud-user hidden"></span>
+          <button id="googleSignInBtn" class="secondary">Google 登入同步</button>
+          <button id="googleSignOutBtn" class="ghost hidden">登出</button>
+        </div>
         <span id="networkBadge" class="badge">檢查網路中…</span>
         <button id="exportBackupBtn" class="secondary">匯出備份</button>
         <label class="button-like ghost">匯入備份<input id="importBackupInput" type="file" accept="application/json,.json" hidden /></label>
@@ -163,5 +169,6 @@
   <dialog id="imageDialog"><div class="image-dialog-card"><button id="closeImageDialog" class="ghost">關閉</button><img id="imagePreview" alt="附件預覽" /></div></dialog>
 
   <script src="app.js"></script>
+  <script type="module" src="firebase-sync.js"></script>
 </body>
 </html>

@@ -21,7 +21,10 @@ function today(){return new Date().toISOString().slice(0,10)}
 function localDateTimeValue(d=new Date()){const z=new Date(d.getTime()-d.getTimezoneOffset()*60000);return z.toISOString().slice(0,16)}
 function escapeHtml(v){return String(v??"").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&#039;")}
 function activeEvent(){return state.events.find(e=>e.id===state.activeEventId)||null}
-function saveState(){localStorage.setItem(STORAGE_KEY,JSON.stringify(state))}
+function saveState(reason="local-change"){
+  localStorage.setItem(STORAGE_KEY,JSON.stringify(state));
+  window.dispatchEvent(new CustomEvent("friend-split:state-saved",{detail:{state:structuredClone(state),reason}}));
+}
 function money(n,c){const currency=c||activeEvent()?.baseCurrency||"TWD";try{return new Intl.NumberFormat("zh-TW",{style:"currency",currency,maximumFractionDigits:2}).format(round2(n))}catch{return `${currency} ${round2(n)}`}}
 function formatDateRange(ev){if(!ev)return "";if(ev.endDate&&ev.endDate!==ev.startDate)return `${ev.startDate} ～ ${ev.endDate}`;return ev.startDate||"未設定日期"}
 function formatDateTime(iso){if(!iso)return "";const d=new Date(iso);if(Number.isNaN(d.getTime()))return iso.replace("T"," ");return new Intl.DateTimeFormat("zh-TW",{year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false}).format(d)}
@@ -253,7 +256,7 @@ function renderStats(){const ev=activeEvent(),total=round2(ev.expenses.reduce((s
 function updateNetworkBadge(){const b=el("networkBadge");b.textContent=navigator.onLine?"● 已連線":"● 離線可記帳";b.className=`badge ${navigator.onLine?"online":"offline"}`}
 
 async function exportBackup(){
-  const keys=await getAllAttachmentKeys(),attachments={};for(const key of keys){const blob=await getAttachment(key);if(blob)attachments[key]=await blobToDataURL(blob)}const payload={version:4,exportedAt:new Date().toISOString(),state,attachments};const blob=new Blob([JSON.stringify(payload)],{type:"application/json"});const url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download=`朋友分帳備份_${today()}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000)
+  const keys=await getAllAttachmentKeys(),attachments={};for(const key of keys){const blob=await getAttachment(key);if(blob)attachments[key]=await blobToDataURL(blob)}const payload={version:5,exportedAt:new Date().toISOString(),state,attachments};const blob=new Blob([JSON.stringify(payload)],{type:"application/json"});const url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download=`朋友分帳備份_${today()}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000)
 }
 async function importBackup(file){if(!file)return;if(!confirm("匯入備份會覆蓋目前這個瀏覽器內的分帳資料，確定嗎？"))return;try{const payload=JSON.parse(await file.text());if(!payload.state||!Array.isArray(payload.state.events))throw new Error();await clearAttachments();for(const [id,dataURL] of Object.entries(payload.attachments||{}))await saveAttachment(dataURLToBlob(dataURL),id);state=payload.state;saveState();cancelEditExpense();renderAll();alert("備份匯入完成。") }catch(e){console.error(e);alert("備份檔格式不正確或匯入失敗。") }finally{el("importBackupInput").value=""}}
 
@@ -270,5 +273,20 @@ el("confirmPaymentBtn").onclick=confirmPayment;el("closeImageDialog").onclick=()
 el("exportBackupBtn").onclick=exportBackup;el("importBackupInput").onchange=e=>importBackup(e.target.files[0]);
 el("resetBtn").onclick=async()=>{if(!confirm("這會清除所有朋友、活動、支出、收據與付款證明，確定嗎？"))return;await clearAttachments();state=structuredClone(defaultState);saveState();cancelEditExpense();renderAll()};window.addEventListener("online",updateNetworkBadge);window.addEventListener("offline",updateNetworkBadge);
 
+// 提供 Firebase 模組安全地讀取/套用目前 App 狀態。
+window.friendSplitApp={
+  getState:()=>structuredClone(state),
+  replaceState:(next,{source="external"}={})=>{
+    state=normalizeState(next||structuredClone(defaultState));
+    localStorage.setItem(STORAGE_KEY,JSON.stringify(state));
+    draftParticipants=new Set(activeEvent()?.attendees||[]);
+    pendingSettlement=null;editExpenseId=null;editingReceiptId=null;
+    renderAll();
+    if(source!=="cloud")window.dispatchEvent(new CustomEvent("friend-split:state-saved",{detail:{state:structuredClone(state),reason:`replace-${source}`}}));
+  },
+  storageKey:STORAGE_KEY
+};
+
 initSelects();renderAll();
+window.dispatchEvent(new Event("friend-split:app-ready"));
 if("serviceWorker" in navigator&&location.protocol!=="file:")window.addEventListener("load",()=>navigator.serviceWorker.register("./sw.js").catch(console.warn));
