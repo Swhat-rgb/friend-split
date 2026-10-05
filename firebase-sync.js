@@ -3,7 +3,6 @@ import {
   getAuth,
   GoogleAuthProvider,
   onAuthStateChanged,
-  signInWithPopup,
   signInWithRedirect,
   getRedirectResult,
   signOut,
@@ -15,6 +14,7 @@ import {
   persistentLocalCache,
   persistentMultipleTabManager,
   doc,
+  collection,
   getDoc,
   setDoc,
   onSnapshot,
@@ -38,200 +38,170 @@ try {
     localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() })
   });
 } catch (err) {
-  console.warn("Firestore persistent cache unavailable; using existing instance if present.", err);
+  console.warn("Firestore persistent cache unavailable", err);
 }
-
 const provider = new GoogleAuthProvider();
 provider.setCustomParameters({ prompt: "select_account" });
 
+const GROUP_STORAGE_KEY = "friendSplitSharedActiveGroupV6";
 let currentUser = null;
-let initializedForUser = false;
-let unsubscribeSnapshot = null;
-let uploadTimer = null;
+let activeGroupId = localStorage.getItem(GROUP_STORAGE_KEY) || "";
+let activeGroupMeta = null;
+let initializedForGroup = false;
 let applyingCloudState = false;
 let lastUploadedJson = "";
+let uploadTimer = null;
+let unsubscribeGroup = null;
+let unsubscribeUserGroups = null;
+let unsubscribeMembers = null;
 
 const $ = id => document.getElementById(id);
-const status = (text, kind = "") => {
-  const node = $("cloudStatus");
-  if (!node) return;
-  node.textContent = text;
-  node.className = `badge cloud-status ${kind}`.trim();
+const status = (text, kind="") => {
+  const n=$("cloudStatus"); if(!n)return;
+  n.textContent=text; n.className=`badge cloud-status ${kind}`.trim();
 };
+const api = () => window.friendSplitApp || null;
+const groupRef = gid => doc(db,"groups",gid);
+const memberRef = (gid,uid) => doc(db,"groups",gid,"members",uid);
+const userGroupRef = (uid,gid) => doc(db,"users",uid,"groups",gid);
 
-function setAuthUi(user) {
-  const signIn = $("googleSignInBtn");
-  const signOutBtn = $("googleSignOutBtn");
-  const who = $("cloudUserName");
-  if (!signIn || !signOutBtn || !who) return;
-  if (user) {
-    signIn.classList.add("hidden");
-    signOutBtn.classList.remove("hidden");
-    who.classList.remove("hidden");
-    who.textContent = user.displayName || user.email || "已登入";
-  } else {
-    signIn.classList.remove("hidden");
-    signOutBtn.classList.add("hidden");
-    who.classList.add("hidden");
-    who.textContent = "";
+function randomInviteCode(){
+  const chars="ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const a=new Uint32Array(8); crypto.getRandomValues(a);
+  return Array.from(a,x=>chars[x%chars.length]).join("");
+}
+function setAuthUi(user){
+  $("googleSignInBtn")?.classList.toggle("hidden",!!user);
+  $("googleSignOutBtn")?.classList.toggle("hidden",!user);
+  $("cloudUserName")?.classList.toggle("hidden",!user);
+  if($("cloudUserName")) $("cloudUserName").textContent=user?(user.displayName||user.email||"已登入"):"";
+  $("sharedGroupPanel")?.classList.toggle("hidden",!user);
+}
+function setGroupUi(meta=null){
+  activeGroupMeta=meta;
+  const label=$("currentGroupLabel");
+  const invite=$("currentInviteCode");
+  if(label) label.textContent=meta?`${meta.name||"未命名群組"}`:"尚未選擇共享群組";
+  if(invite) invite.textContent=meta?.inviteCode?`邀請碼：${meta.inviteCode}`:"";
+  $("copyInviteBtn")?.classList.toggle("hidden",!meta?.inviteCode);
+  $("forceCloudUploadBtn")?.classList.toggle("hidden",!meta);
+}
+function stopGroupListeners(){
+  if(unsubscribeGroup){unsubscribeGroup();unsubscribeGroup=null;}
+  if(unsubscribeMembers){unsubscribeMembers();unsubscribeMembers=null;}
+  initializedForGroup=false; applyingCloudState=false; lastUploadedJson="";
+}
+async function writeGroupState(state, reason="update"){
+  if(!currentUser||!activeGroupId||!initializedForGroup||applyingCloudState||!state)return;
+  const json=JSON.stringify(state); if(json===lastUploadedJson)return;
+  status(navigator.onLine?"☁ 群組同步中…":"☁ 離線，待同步", navigator.onLine?"syncing":"offline");
+  try{
+    await setDoc(groupRef(activeGroupId),{
+      state, schemaVersion:6, updatedAt:serverTimestamp(), updatedAtMs:Date.now(),
+      updatedBy:currentUser.uid, updatedByName:currentUser.displayName||currentUser.email||"成員",
+      lastReason:reason
+    },{merge:true});
+    lastUploadedJson=json;
+    status(navigator.onLine?"☁ 群組已同步":"☁ 已排入離線同步","online");
+  }catch(err){console.error(err); status("☁ 群組同步失敗","error");}
+}
+function queueGroupState(state,reason="local-change"){
+  if(!currentUser||!activeGroupId||!initializedForGroup||applyingCloudState)return;
+  clearTimeout(uploadTimer); uploadTimer=setTimeout(()=>writeGroupState(state,reason),700);
+}
+async function activateGroup(gid){
+  if(!currentUser||!gid)return;
+  stopGroupListeners(); activeGroupId=gid; localStorage.setItem(GROUP_STORAGE_KEY,gid);
+  status("☁ 載入共享群組…","syncing");
+  const snap=await getDoc(groupRef(gid));
+  if(!snap.exists()){ status("☁ 找不到群組","error"); return; }
+  const data=snap.data(); setGroupUi({id:gid,...data});
+  if(data.state){
+    applyingCloudState=true; api()?.replaceState(data.state,{source:"cloud"}); applyingCloudState=false;
+    lastUploadedJson=JSON.stringify(data.state);
   }
-}
-
-function getAppApi() {
-  return window.friendSplitApp || null;
-}
-
-function cloudDocRef(uid) {
-  return doc(db, "users", uid, "sync", "main");
-}
-
-function isMeaningfulState(s) {
-  if (!s) return false;
-  const defaultNames = ["A","B","C","D","E","F","G"];
-  const friendsChanged = Array.isArray(s.friends) && JSON.stringify(s.friends) !== JSON.stringify(defaultNames);
-  return friendsChanged || (Array.isArray(s.events) && s.events.length > 0);
-}
-
-async function writeCloudState(state, reason = "update") {
-  if (!currentUser || !initializedForUser || applyingCloudState || !state) return;
-  const json = JSON.stringify(state);
-  if (json === lastUploadedJson) return;
-  status(navigator.onLine ? "☁ 同步中…" : "☁ 離線，待同步", navigator.onLine ? "syncing" : "offline");
-  try {
-    await setDoc(cloudDocRef(currentUser.uid), {
-      state,
-      schemaVersion: 5,
-      updatedAt: serverTimestamp(),
-      updatedAtMs: Date.now(),
-      lastReason: reason
-    }, { merge: true });
-    lastUploadedJson = json;
-    status(navigator.onLine ? "☁ 已同步" : "☁ 已排入離線同步", "online");
-  } catch (err) {
-    console.error("Cloud save failed", err);
-    status("☁ 同步失敗", "error");
-  }
-}
-
-function queueCloudState(state, reason = "local-change") {
-  if (!currentUser || !initializedForUser || applyingCloudState) return;
-  clearTimeout(uploadTimer);
-  uploadTimer = setTimeout(() => writeCloudState(state, reason), 650);
-}
-
-async function bootstrapUser(user) {
-  const api = getAppApi();
-  if (!api) return;
-  status("☁ 連接雲端中…", "syncing");
-  const ref = cloudDocRef(user.uid);
-  try {
-    const snap = await getDoc(ref);
-    const localState = api.getState();
-    if (!snap.exists() || !snap.data()?.state) {
-      // 首次登入：雲端是空的，把目前這台裝置既有 V4/V5 帳目上傳。
-      await setDoc(ref, {
-        state: localState,
-        schemaVersion: 5,
-        updatedAt: serverTimestamp(),
-        updatedAtMs: Date.now(),
-        migratedFromLocal: isMeaningfulState(localState)
-      });
-      lastUploadedJson = JSON.stringify(localState);
-      status("☁ 已上傳本機資料", "online");
-    } else {
-      const cloudState = snap.data().state;
-      applyingCloudState = true;
-      api.replaceState(cloudState, { source: "cloud" });
-      applyingCloudState = false;
-      lastUploadedJson = JSON.stringify(cloudState);
-      status("☁ 已載入雲端資料", "online");
+  initializedForGroup=true;
+  unsubscribeGroup=onSnapshot(groupRef(gid),{includeMetadataChanges:true},s=>{
+    if(!s.exists())return; const d=s.data(); setGroupUi({id:gid,...d});
+    if(s.metadata.hasPendingWrites){status("☁ 群組同步中…","syncing");return;}
+    if(!d.state)return; const remoteJson=JSON.stringify(d.state);
+    if(remoteJson!==lastUploadedJson){
+      applyingCloudState=true; api()?.replaceState(d.state,{source:"cloud"}); applyingCloudState=false;
+      lastUploadedJson=remoteJson;
     }
-
-    initializedForUser = true;
-    if (unsubscribeSnapshot) unsubscribeSnapshot();
-    unsubscribeSnapshot = onSnapshot(ref, { includeMetadataChanges: true }, snap2 => {
-      if (!snap2.exists() || !snap2.data()?.state) return;
-      if (snap2.metadata.hasPendingWrites) {
-        status(navigator.onLine ? "☁ 同步中…" : "☁ 離線，待同步", navigator.onLine ? "syncing" : "offline");
-        return;
-      }
-      const remote = snap2.data().state;
-      const remoteJson = JSON.stringify(remote);
-      if (remoteJson === lastUploadedJson) {
-        status("☁ 已同步", "online");
-        return;
-      }
-      applyingCloudState = true;
-      api.replaceState(remote, { source: "cloud" });
-      applyingCloudState = false;
-      lastUploadedJson = remoteJson;
-      status("☁ 已同步", "online");
-    }, err => {
-      console.error("Cloud listener failed", err);
-      status("☁ 雲端連線錯誤", "error");
+    status("☁ 群組已同步","online");
+  },err=>{console.error(err); status("☁ 群組連線錯誤","error");});
+  unsubscribeMembers=onSnapshot(collection(db,"groups",gid,"members"),snapMembers=>{
+    const names=[]; snapMembers.forEach(x=>names.push(x.data().displayName||x.data().email||"成員"));
+    if($("groupMembers")) $("groupMembers").textContent=names.length?`成員：${names.join("、")}`:"";
+  });
+}
+async function createGroup(){
+  if(!currentUser)return alert("請先登入 Google。");
+  const name=($("newGroupName")?.value||"").trim(); if(!name)return alert("請輸入群組名稱。");
+  const gid=doc(collection(db,"groups")).id; const code=randomInviteCode();
+  try{
+    const localState=api()?.getState();
+    await setDoc(groupRef(gid),{
+      name, ownerUid:currentUser.uid, inviteCode:code, state:localState,
+      schemaVersion:6, createdAt:serverTimestamp(), updatedAt:serverTimestamp(), updatedAtMs:Date.now()
     });
-  } catch (err) {
-    console.error("Cloud bootstrap failed", err);
-    status(navigator.onLine ? "☁ 連線失敗" : "☁ 離線模式", navigator.onLine ? "error" : "offline");
-  }
+    await setDoc(memberRef(gid,currentUser.uid),{
+      displayName:currentUser.displayName||currentUser.email||"建立者", email:currentUser.email||"", role:"owner", inviteCode:"owner", joinedAt:serverTimestamp()
+    });
+    await setDoc(doc(db,"invites",code),{groupId:gid,groupName:name,ownerUid:currentUser.uid,active:true,createdAt:serverTimestamp()});
+    await setDoc(userGroupRef(currentUser.uid,gid),{name,role:"owner",inviteCode:code,joinedAt:serverTimestamp()});
+    if($("newGroupName")) $("newGroupName").value="";
+    await activateGroup(gid);
+    alert(`共享群組已建立。\n邀請碼：${code}\n把這組邀請碼傳給朋友即可。`);
+  }catch(err){console.error(err);alert("建立群組失敗：\n"+(err?.message||err));}
+}
+async function joinGroup(){
+  if(!currentUser)return alert("請先登入 Google。");
+  const code=($("joinGroupCode")?.value||"").trim().toUpperCase(); if(!code)return alert("請輸入邀請碼。");
+  try{
+    const inv=await getDoc(doc(db,"invites",code));
+    if(!inv.exists()||inv.data().active!==true)return alert("邀請碼不存在或已失效。");
+    const {groupId,groupName}=inv.data();
+    await setDoc(memberRef(groupId,currentUser.uid),{
+      displayName:currentUser.displayName||currentUser.email||"成員", email:currentUser.email||"", role:"member", inviteCode:code, joinedAt:serverTimestamp()
+    },{merge:true});
+    await setDoc(userGroupRef(currentUser.uid,groupId),{name:groupName||"共享群組",role:"member",inviteCode:code,joinedAt:serverTimestamp()},{merge:true});
+    if($("joinGroupCode")) $("joinGroupCode").value="";
+    await activateGroup(groupId);
+  }catch(err){console.error(err);alert("加入群組失敗：\n"+(err?.message||err));}
+}
+function listenMyGroups(){
+  if(unsubscribeUserGroups){unsubscribeUserGroups();unsubscribeUserGroups=null;}
+  if(!currentUser)return;
+  unsubscribeUserGroups=onSnapshot(collection(db,"users",currentUser.uid,"groups"),snap=>{
+    const sel=$("groupSelect"); if(!sel)return;
+    const old=activeGroupId; sel.innerHTML='<option value="">選擇共享群組</option>';
+    snap.forEach(d=>{const o=document.createElement("option");o.value=d.id;o.textContent=d.data().name||"共享群組";sel.appendChild(o);});
+    if(old && [...sel.options].some(o=>o.value===old)){sel.value=old;if(!initializedForGroup)activateGroup(old).catch(console.error)}
+    else if(snap.size===1){const gid=snap.docs[0].id;sel.value=gid;activateGroup(gid).catch(console.error)}
+  });
 }
 
-async function doSignIn() {
-  status("Google 登入中…", "syncing");
-  try {
-    await signInWithPopup(auth, provider);
-  } catch (err) {
-    console.warn("Popup sign-in failed", err);
-    if (["auth/popup-blocked", "auth/operation-not-supported-in-this-environment"].includes(err?.code)) {
-      await signInWithRedirect(auth, provider);
-      return;
-    }
-    status(`登入失敗${err?.code ? `：${err.code}` : ""}`, "error");
-    alert("Google 登入失敗。若網站是 GitHub Pages，請確認 Firebase Authentication 的授權網域已加入 swhat-rgb.github.io。\n\n" + (err?.message || ""));
-  }
-}
+window.addEventListener("friend-split:state-saved",e=>queueGroupState(e.detail?.state,e.detail?.reason||"local-change"));
+window.addEventListener("online",()=>{if(activeGroupId){status("☁ 已連線，檢查群組同步…","syncing");queueGroupState(api()?.getState(),"back-online")}});
+window.addEventListener("offline",()=>{if(activeGroupId)status("☁ 離線，變更會稍後同步","offline")});
 
-async function doSignOut() {
-  if (!confirm("要登出雲端同步嗎？本機資料仍會保留在這台裝置。")) return;
-  await signOut(auth);
-}
-
-window.addEventListener("friend-split:state-saved", e => {
-  queueCloudState(e.detail?.state, e.detail?.reason || "local-change");
+$("googleSignInBtn")?.addEventListener("click",async()=>{try{status("前往 Google 登入…","syncing");await signInWithRedirect(auth,provider)}catch(err){console.error(err);alert("Google 登入失敗：\n"+(err?.message||err))}});
+$("googleSignOutBtn")?.addEventListener("click",async()=>{if(confirm("確定登出？本機資料仍會保留。"))await signOut(auth)});
+$("createGroupBtn")?.addEventListener("click",createGroup);
+$("joinGroupBtn")?.addEventListener("click",joinGroup);
+$("groupSelect")?.addEventListener("change",e=>{const gid=e.target.value;if(gid)activateGroup(gid).catch(err=>alert(err.message));});
+$("copyInviteBtn")?.addEventListener("click",async()=>{const code=activeGroupMeta?.inviteCode;if(!code)return;await navigator.clipboard?.writeText(code);alert(`已複製邀請碼：${code}`)});
+$("forceCloudUploadBtn")?.addEventListener("click",async()=>{
+  if(!currentUser)return alert("請先登入。"); if(!activeGroupId)return alert("請先建立或加入共享群組。");
+  if(!confirm("要用這台裝置目前的完整帳目覆蓋共享群組資料嗎？\n\n這會影響群組所有成員看到的內容。"))return;
+  initializedForGroup=true; lastUploadedJson=""; await writeGroupState(api()?.getState(),"manual-overwrite"); alert("已上傳本機資料到共享群組。");
 });
 
-window.addEventListener("online", () => {
-  if (currentUser) {
-    status("☁ 已連線，檢查同步…", "syncing");
-    const api = getAppApi();
-    if (api) queueCloudState(api.getState(), "back-online");
-  }
-});
-window.addEventListener("offline", () => {
-  if (currentUser) status("☁ 離線，變更會稍後同步", "offline");
-});
-
-$("googleSignInBtn")?.addEventListener("click", doSignIn);
-$("googleSignOutBtn")?.addEventListener("click", doSignOut);
-
-try {
-  await setPersistence(auth, browserLocalPersistence);
-  await getRedirectResult(auth);
-} catch (err) {
-  console.warn("Auth persistence/redirect initialization warning", err);
-}
-
-onAuthStateChanged(auth, async user => {
-  currentUser = user;
-  initializedForUser = false;
-  if (unsubscribeSnapshot) {
-    unsubscribeSnapshot();
-    unsubscribeSnapshot = null;
-  }
-  setAuthUi(user);
-  if (!user) {
-    status("☁ 尚未登入", "offline");
-    return;
-  }
-  await bootstrapUser(user);
+try{await setPersistence(auth,browserLocalPersistence);await getRedirectResult(auth)}catch(err){console.warn("Auth init warning",err)}
+onAuthStateChanged(auth,user=>{
+  currentUser=user; setAuthUi(user); stopGroupListeners();
+  if(!user){status("☁ 尚未登入","offline");setGroupUi(null);return;}
+  status("☁ 已登入，選擇共享群組","online"); listenMyGroups();
 });

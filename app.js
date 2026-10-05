@@ -290,3 +290,5 @@ window.friendSplitApp={
 initSelects();renderAll();
 window.dispatchEvent(new Event("friend-split:app-ready"));
 if("serviceWorker" in navigator&&location.protocol!=="file:")window.addEventListener("load",()=>navigator.serviceWorker.register("./sw.js").catch(console.warn));
+
+

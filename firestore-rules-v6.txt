@@ -1,0 +1,50 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+    function isMember(groupId) {
+      return signedIn()
+        && exists(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid));
+    }
+
+    // 每個使用者自己的群組索引
+    match /users/{userId}/{document=**} {
+      allow read, write: if signedIn() && request.auth.uid == userId;
+    }
+
+    match /groups/{groupId} {
+      allow create: if signedIn() && request.resource.data.ownerUid == request.auth.uid;
+      allow read, update: if isMember(groupId);
+      allow delete: if signedIn() && resource.data.ownerUid == request.auth.uid;
+
+      match /members/{userId} {
+        allow read: if isMember(groupId);
+        allow create: if signedIn()
+          && userId == request.auth.uid
+          && (
+            get(/databases/$(database)/documents/groups/$(groupId)).data.ownerUid == request.auth.uid
+            || (
+              request.resource.data.inviteCode is string
+              && exists(/databases/$(database)/documents/invites/$(request.resource.data.inviteCode))
+              && get(/databases/$(database)/documents/invites/$(request.resource.data.inviteCode)).data.groupId == groupId
+              && get(/databases/$(database)/documents/invites/$(request.resource.data.inviteCode)).data.active == true
+            )
+          );
+        allow update, delete: if signedIn() && userId == request.auth.uid;
+      }
+    }
+
+    match /invites/{code} {
+      allow get: if signedIn();
+      allow list: if false;
+      allow create: if signedIn()
+        && request.resource.data.ownerUid == request.auth.uid
+        && exists(/databases/$(database)/documents/groups/$(request.resource.data.groupId))
+        && get(/databases/$(database)/documents/groups/$(request.resource.data.groupId)).data.ownerUid == request.auth.uid;
+      allow update, delete: if signedIn() && resource.data.ownerUid == request.auth.uid;
+    }
+  }
+}

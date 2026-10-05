@@ -12,7 +12,7 @@
   <div class="app-shell">
     <header class="topbar">
       <div>
-        <div class="eyebrow">FRIEND SPLIT · CLOUD V5</div>
+        <div class="eyebrow">FRIEND SPLIT · SHARED V6</div>
         <h1>朋友分帳</h1>
         <p class="muted">以「活動」為單位保存日期、支出、結算、收據與付款證明。</p>
       </div>
@@ -21,6 +21,7 @@
           <span id="cloudStatus" class="badge cloud-status offline">☁ 尚未登入</span>
           <span id="cloudUserName" class="cloud-user hidden"></span>
           <button id="googleSignInBtn" class="secondary">Google 登入同步</button>
+<button id="forceCloudUploadBtn" class="ghost hidden">用本機資料覆蓋群組</button>
           <button id="googleSignOutBtn" class="ghost hidden">登出</button>
         </div>
         <span id="networkBadge" class="badge">檢查網路中…</span>
@@ -29,6 +30,24 @@
         <button id="resetBtn" class="ghost danger">清空資料</button>
       </div>
     </header>
+
+    <section id="sharedGroupPanel" class="card card-wide shared-panel hidden">
+      <div class="section-head">
+        <div>
+          <h2>共享群組</h2>
+          <p class="muted">建立群組後把邀請碼傳給朋友；大家登入自己的 Google 帳號後，就能一起看、一起記。</p>
+        </div>
+      </div>
+      <div class="shared-current">
+        <div><strong id="currentGroupLabel">尚未選擇共享群組</strong><div id="currentInviteCode" class="muted small"></div><div id="groupMembers" class="muted small"></div></div>
+        <button id="copyInviteBtn" class="secondary hidden">複製邀請碼</button>
+      </div>
+      <div class="shared-grid">
+        <label class="field"><span>我的共享群組</span><select id="groupSelect"><option value="">選擇共享群組</option></select></label>
+        <div class="field"><span>建立新群組</span><div class="inline-form"><input id="newGroupName" placeholder="例如：屏東吃喝團"><button id="createGroupBtn">建立</button></div></div>
+        <div class="field"><span>加入朋友的群組</span><div class="inline-form"><input id="joinGroupCode" placeholder="輸入 8 碼邀請碼" maxlength="8"><button id="joinGroupBtn" class="secondary">加入</button></div></div>
+      </div>
+    </section>
 
     <main class="grid">
       <section class="card">
