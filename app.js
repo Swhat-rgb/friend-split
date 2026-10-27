@@ -124,9 +124,16 @@ function renderExpenseParticipants(){
 }
 function renderCustomAmountArea(values=null){
   const host=el("customAmountArea"),custom=el("splitMode").value==="custom";host.classList.toggle("hidden",!custom);if(!custom){host.innerHTML="";return}
-  const old={};host.querySelectorAll("input[data-person]").forEach(i=>old[i.dataset.person]=i.value);host.innerHTML="";[...draftParticipants].forEach(name=>{const row=document.createElement("label");row.className="custom-row";row.innerHTML=`<span>${escapeHtml(name)}</span><input inputmode="decimal" data-person="${escapeHtml(name)}" placeholder="原始金額">`;const input=row.querySelector("input");input.value=(values&&values[name]!=null)?values[name]:(old[name]||"");input.oninput=updateDraftPreview;host.appendChild(row)})
+  const old={};host.querySelectorAll("input[data-person]").forEach(i=>old[i.dataset.person]=i.value);host.innerHTML="";[...draftParticipants].forEach(name=>{const row=document.createElement("label");row.className="custom-row";row.innerHTML=`<span>${escapeHtml(name)}</span><input inputmode="decimal" data-person="${escapeHtml(name)}" placeholder="原始金額">`;const input=row.querySelector("input");input.value=(values&&values[name]!=null)?values[name]:(old[name]||"");input.oninput=()=>{syncCustomTotalAmount();updateDraftPreview()};host.appendChild(row)})
 }
 function getCustomShares(){const v={};document.querySelectorAll("#customAmountArea input[data-person]").forEach(i=>{try{v[i.dataset.person]=safeMath(i.value||0)}catch{v[i.dataset.person]=NaN}});return v}
+function syncCustomTotalAmount(){
+  if(el("splitMode").value!=="custom")return;
+  const shares=getCustomShares();
+  const values=Object.values(shares);
+  if(values.some(v=>!Number.isFinite(v)))return;
+  el("expenseAmount").value=round2(values.reduce((sum,v)=>sum+Number(v||0),0));
+}
 function currentServicePct(){return el("serviceFeeToggle").checked?Number(el("serviceFeePercent").value||0):0}
 function currentServiceBasis(){return el("serviceFeeBasis").value||"before_discount"}
 function getDraftBaseAmount(){return safeMath(el("expenseAmount").value)}
@@ -264,7 +271,7 @@ el("addFriendBtn").onclick=addFriend;el("friendName").onkeydown=e=>{if(e.key==="
 el("createEventBtn").onclick=createEvent;el("editEventMetaBtn").onclick=()=>el("eventMetaEditor").classList.remove("hidden");el("cancelEventMetaBtn").onclick=()=>el("eventMetaEditor").classList.add("hidden");el("saveEventMetaBtn").onclick=saveEventMeta;el("deleteEventBtn").onclick=deleteEvent;
 el("selectAllAttendeesBtn").onclick=()=>{const ev=activeEvent();ev.attendees=[...state.friends];draftParticipants=new Set(ev.attendees);saveState();renderAttendees();renderExpenseParticipants();updateDraftPreview()};el("clearAttendeesBtn").onclick=()=>{const ev=activeEvent();ev.attendees=[];draftParticipants=new Set();saveState();renderAttendees();renderExpenseParticipants();updateDraftPreview()};
 el("expenseSelectDefaultBtn").onclick=()=>{draftParticipants=new Set(activeEvent().attendees);renderExpenseParticipants();renderDiscountControls();updateDraftPreview()};el("expenseSelectAllBtn").onclick=()=>{draftParticipants=new Set(state.friends);renderExpenseParticipants();renderDiscountControls();updateDraftPreview()};
-el("splitMode").onchange=()=>{renderCustomAmountArea();renderDiscountControls();updateDraftPreview()};el("expenseAmount").oninput=updateDraftPreview;el("serviceFeePercent").oninput=updateDraftPreview;el("serviceFeeBasis").onchange=updateDraftPreview;el("exchangeRate").oninput=updateDraftPreview;
+el("splitMode").onchange=()=>{renderCustomAmountArea();if(el("splitMode").value==="custom")syncCustomTotalAmount();renderDiscountControls();updateDraftPreview()};el("expenseAmount").oninput=updateDraftPreview;el("serviceFeePercent").oninput=updateDraftPreview;el("serviceFeeBasis").onchange=updateDraftPreview;el("exchangeRate").oninput=updateDraftPreview;
 el("discountToggle").onchange=()=>{renderDiscountControls();updateDraftPreview()};el("discountType").onchange=()=>{renderDiscountControls();updateDraftPreview()};el("discountValue").oninput=updateDraftPreview;el("discountMode").onchange=()=>{renderDiscountControls();updateDraftPreview()};
 el("serviceFeeToggle").onchange=e=>{el("serviceFeeArea").classList.toggle("hidden",!e.target.checked);updateDraftPreview()};
 el("foreignCurrencyToggle").onchange=e=>{el("foreignCurrencyArea").classList.toggle("hidden",!e.target.checked);if(e.target.checked){if(el("expenseCurrency").value===activeEvent().baseCurrency)el("expenseCurrency").value=activeEvent().baseCurrency==="TWD"?"JPY":"TWD";fetchRate()}updateDraftPreview()};el("expenseCurrency").onchange=()=>fetchRate();el("refreshRateBtn").onclick=()=>fetchRate(true);el("addExpenseBtn").onclick=saveExpense;el("cancelEditExpenseBtn").onclick=()=>{resetExpenseForm(true);renderAll()};
