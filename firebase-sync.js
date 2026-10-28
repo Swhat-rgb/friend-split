@@ -46,6 +46,7 @@ const GROUP_STORAGE_KEY = "friendSplitSharedActiveGroupV6_1";
 let currentUser = null;
 let activeGroupId = localStorage.getItem(GROUP_STORAGE_KEY) || "";
 let activeGroupMeta = null;
+window.friendSplitPermissions={role:"guest",isOwner:false};
 let initializedForGroup = false;
 let applyingCloudState = false;
 let lastUploadedJson = "";
@@ -78,6 +79,9 @@ function setAuthUi(user){
 }
 function setGroupUi(meta=null){
   activeGroupMeta=meta;
+  const isOwner=!!(meta&&currentUser&&meta.ownerUid===currentUser.uid);
+  window.friendSplitPermissions={role:isOwner?"owner":(meta?"member":"guest"),isOwner};
+  window.dispatchEvent(new CustomEvent("friend-split:permissions-changed",{detail:window.friendSplitPermissions}));
   const label=$("currentGroupLabel");
   const invite=$("currentInviteCode");
   if(label) label.textContent=meta?`${meta.name||"未命名群組"}`:"尚未選擇共享群組";
@@ -96,7 +100,7 @@ async function writeGroupState(state, reason="update"){
   status(navigator.onLine?"☁ 群組同步中…":"☁ 離線，待同步", navigator.onLine?"syncing":"offline");
   try{
     await setDoc(groupRef(activeGroupId),{
-      state, schemaVersion:6, updatedAt:serverTimestamp(), updatedAtMs:Date.now(),
+      state, schemaVersion:6.3, updatedAt:serverTimestamp(), updatedAtMs:Date.now(),
       updatedBy:currentUser.uid, updatedByName:currentUser.displayName||currentUser.email||"成員",
       lastReason:reason
     },{merge:true});
@@ -143,7 +147,7 @@ async function createGroup(){
     const localState=api()?.getState();
     await setDoc(groupRef(gid),{
       name, ownerUid:currentUser.uid, inviteCode:code, state:localState,
-      schemaVersion:6, createdAt:serverTimestamp(), updatedAt:serverTimestamp(), updatedAtMs:Date.now()
+      schemaVersion:6.3, createdAt:serverTimestamp(), updatedAt:serverTimestamp(), updatedAtMs:Date.now()
     });
     await setDoc(memberRef(gid,currentUser.uid),{
       displayName:currentUser.displayName||currentUser.email||"建立者", email:currentUser.email||"", role:"owner", inviteCode:"owner", joinedAt:serverTimestamp()

@@ -12,7 +12,7 @@
   <div class="app-shell">
     <header class="topbar">
       <div>
-        <div class="eyebrow">FRIEND SPLIT · SHARED V6.2</div>
+        <div class="eyebrow">FRIEND SPLIT · SHARED V6.3</div>
         <h1>朋友分帳</h1>
         <p class="muted">以「活動」為單位保存日期、支出、結算、收據與付款證明。</p>
       </div>
@@ -78,8 +78,9 @@
             <p id="activeEventDateText" class="muted"></p>
           </div>
           <div class="row-actions compact">
+            <button id="closeActiveEventBtn" class="ghost">關閉活動</button>
             <button id="editEventMetaBtn" class="secondary">編輯活動資料</button>
-            <button id="deleteEventBtn" class="ghost danger">刪除活動</button>
+            <button id="deleteEventBtn" class="ghost danger hidden">刪除活動（Owner）</button>
           </div>
         </div>
         <div id="eventMetaEditor" class="option-panel hidden">

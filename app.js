@@ -8,6 +8,7 @@ const CATEGORIES = ["餐飲","交通","住宿","娛樂","購物","門票","其�
 
 const defaultState = {friends:["A","B","C","D","E","F","G"],events:[],activeEventId:null,rateCache:{}};
 let state = loadState();
+let localActiveEventId = null;
 let draftParticipants = new Set();
 let pendingSettlement = null;
 let editExpenseId = null;
@@ -20,7 +21,9 @@ function uid(prefix="id"){return `${prefix}_${Date.now()}_${Math.random().toStri
 function today(){return new Date().toISOString().slice(0,10)}
 function localDateTimeValue(d=new Date()){const z=new Date(d.getTime()-d.getTimezoneOffset()*60000);return z.toISOString().slice(0,16)}
 function escapeHtml(v){return String(v??"").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&#039;")}
-function activeEvent(){return state.events.find(e=>e.id===state.activeEventId)||null}
+function activeEvent(){return state.events.find(e=>e.id===localActiveEventId)||null}
+function canDeleteActiveEvent(){return window.friendSplitPermissions?.isOwner===true}
+function closeActiveEvent(){localActiveEventId=null;pendingSettlement=null;editExpenseId=null;editingReceiptId=null;renderAll()}
 function saveState(reason="local-change"){
   localStorage.setItem(STORAGE_KEY,JSON.stringify(state));
   window.dispatchEvent(new CustomEvent("friend-split:state-saved",{detail:{state:structuredClone(state),reason}}));
@@ -31,6 +34,7 @@ function formatDateTime(iso){if(!iso)return "";const d=new Date(iso);if(Number.i
 
 function normalizeState(p){
   const out={...structuredClone(defaultState),...p,rateCache:p?.rateCache||{},events:p?.events||[]};
+  out.activeEventId=null;
   out.events=out.events.map(ev=>({...ev,attendees:ev.attendees||[],expenses:(ev.expenses||[]).map(x=>({...x,discountEnabled:!!x.discountEnabled,discountType:x.discountType||"amount",discountValue:x.discountValue||0,discountAmount:x.discountAmount||0,discountMode:x.discountMode||"all_proportional",discountRecipients:x.discountRecipients||[],discountAllocations:x.discountAllocations||{},serviceFeeBasis:x.serviceFeeBasis||"before_discount",shares:(x.shares||[]).map(s=>({...s,discountAmount:s.discountAmount||0,serviceFeeAmount:s.serviceFeeAmount??round2((s.amount||0)-(s.rawAmount||0)+(s.discountAmount||0))}))})),payments:ev.payments||[],settlementMode:ev.settlementMode||"optimized"}));
   return out;
 }
@@ -94,8 +98,8 @@ function renderEvents(){
   [...state.events].sort((a,b)=>(b.startDate||"").localeCompare(a.startDate||"")).forEach(ev=>{
     const total=round2((ev.expenses||[]).reduce((s,x)=>s+(x.baseAmount||0),0));
     const row=document.createElement("div");row.className=`event-item ${ev.id===state.activeEventId?"active":""}`;
-    row.innerHTML=`<div><div class="event-name">${escapeHtml(ev.name||"未命名活動")}</div><div class="event-sub">${escapeHtml(formatDateRange(ev))} · ${(ev.expenses||[]).length} 筆 · ${money(total,ev.baseCurrency)}</div></div><button class="${ev.id===state.activeEventId?"secondary":""}">${ev.id===state.activeEventId?"目前開啟":"開啟"}</button>`;
-    row.querySelector("button").onclick=()=>{state.activeEventId=ev.id;saveState();cancelEditExpense();renderAll()};host.appendChild(row)
+    row.innerHTML=`<div><div class="event-name">${escapeHtml(ev.name||"未命名活動")}</div><div class="event-sub">${escapeHtml(formatDateRange(ev))} · ${(ev.expenses||[]).length} 筆 · ${money(total,ev.baseCurrency)}</div></div><button class="${ev.id===localActiveEventId?"secondary":""}">${ev.id===localActiveEventId?"目前開啟":"開啟"}</button>`;
+    row.querySelector("button").onclick=()=>{localActiveEventId=ev.id;cancelEditExpense();renderAll()};host.appendChild(row)
   })
 }
 
@@ -105,6 +109,7 @@ function renderActiveEvent(){
   if(!ev)return;
   el("activeEventTitle").textContent=ev.name||"未命名活動";
   el("activeEventDateText").textContent=`${formatDateRange(ev)} · 主要幣別 ${ev.baseCurrency}`;
+  el("deleteEventBtn")?.classList.toggle("hidden",!canDeleteActiveEvent());
   el("eventName").value=ev.name||"";el("eventStartDate").value=ev.startDate||"";el("eventEndDate").value=ev.endDate||"";el("baseCurrency").value=ev.baseCurrency||"TWD";el("settlementMode").value=ev.settlementMode||"optimized";
   draftParticipants = editExpenseId ? draftParticipants : new Set(ev.attendees||[]);
   renderAttendees();renderPayerOptions();renderExpenseParticipants();renderExpenses();renderBalances();renderPaidHistory();renderStats();
@@ -202,8 +207,8 @@ async function fetchRate(force=false){
 function addFriend(){const i=el("friendName"),name=i.value.trim();if(!name)return;if(state.friends.includes(name))return alert("這個名字已經存在。");state.friends.push(name);i.value="";saveState();renderAll()}
 function removeFriend(name){const used=state.events.some(ev=>(ev.expenses||[]).some(e=>e.payer===name||e.shares.some(s=>s.person===name))||(ev.payments||[]).some(p=>p.from===name||p.to===name));if(used)return alert("這個人已經出現在活動的消費或付款紀錄中，無法直接刪除。");if(!confirm(`確定要移除「${name}」嗎？`))return;state.friends=state.friends.filter(x=>x!==name);state.events.forEach(ev=>ev.attendees=(ev.attendees||[]).filter(x=>x!==name));saveState();renderAll()}
 
-function createEvent(){const name=el("newEventName").value.trim(),start=el("newEventStartDate").value,end=el("newEventEndDate").value,base=el("newEventCurrency").value;if(!name)return alert("請輸入活動名稱。");if(!start)return alert("請選擇活動開始日期。");if(end&&end<start)return alert("結束日期不能早於開始日期。");const ev={id:uid("event"),name,startDate:start,endDate:end,baseCurrency:base,attendees:[],expenses:[],payments:[],settlementMode:"optimized",createdAt:new Date().toISOString()};state.events.push(ev);state.activeEventId=ev.id;saveState();el("newEventName").value="";el("newEventEndDate").value="";cancelEditExpense();renderAll()}
-async function deleteEvent(){const ev=activeEvent();if(!ev)return;if(!confirm(`確定刪除「${ev.name}」？這會連同支出、收據與付款證明一起刪除。`))return;for(const e of ev.expenses||[])await deleteAttachment(e.receiptId);for(const p of ev.payments||[])await deleteAttachment(p.proofId);state.events=state.events.filter(x=>x.id!==ev.id);state.activeEventId=state.events[0]?.id||null;saveState();cancelEditExpense();renderAll()}
+function createEvent(){const name=el("newEventName").value.trim(),start=el("newEventStartDate").value,end=el("newEventEndDate").value,base=el("newEventCurrency").value;if(!name)return alert("請輸入活動名稱。");if(!start)return alert("請選擇活動開始日期。");if(end&&end<start)return alert("結束日期不能早於開始日期。");const ev={id:uid("event"),name,startDate:start,endDate:end,baseCurrency:base,attendees:[],expenses:[],payments:[],settlementMode:"optimized",createdAt:new Date().toISOString()};state.events.push(ev);state.activeEventId=null;saveState();localActiveEventId=null;el("newEventName").value="";el("newEventEndDate").value="";cancelEditExpense();renderAll();alert("活動已建立。需要記帳時，再從「活動紀錄」按「開啟」。")}
+async function deleteEvent(){const ev=activeEvent();if(!ev)return;if(!canDeleteActiveEvent())return alert("只有共享群組的建立者（Owner）可以刪除整個活動。");if(!confirm(`確定刪除「${ev.name}」？這會連同支出、收據與付款證明一起刪除。`))return;for(const e of ev.expenses||[])await deleteAttachment(e.receiptId);for(const p of ev.payments||[])await deleteAttachment(p.proofId);state.events=state.events.filter(x=>x.id!==ev.id);state.activeEventId=null;localActiveEventId=null;saveState("owner-delete-event");renderAll()}
 function saveEventMeta(){const ev=activeEvent(),name=el("eventName").value.trim(),start=el("eventStartDate").value,end=el("eventEndDate").value,base=el("baseCurrency").value;if(!name||!start)return alert("活動名稱與開始日期不可空白。");if(end&&end<start)return alert("結束日期不能早於開始日期。");if(base!==ev.baseCurrency&&ev.expenses.length&&!confirm("更改主要幣別不會重算既有支出，只會影響之後的新支出。仍要更改嗎？")){el("baseCurrency").value=ev.baseCurrency;return}Object.assign(ev,{name,startDate:start,endDate:end,baseCurrency:base});saveState();el("eventMetaEditor").classList.add("hidden");renderAll()}
 
 function resetExpenseForm(resetParticipants=true){
@@ -268,7 +273,7 @@ async function exportBackup(){
 async function importBackup(file){if(!file)return;if(!confirm("匯入備份會覆蓋目前這個瀏覽器內的分帳資料，確定嗎？"))return;try{const payload=JSON.parse(await file.text());if(!payload.state||!Array.isArray(payload.state.events))throw new Error();await clearAttachments();for(const [id,dataURL] of Object.entries(payload.attachments||{}))await saveAttachment(dataURLToBlob(dataURL),id);state=payload.state;saveState();cancelEditExpense();renderAll();alert("備份匯入完成。") }catch(e){console.error(e);alert("備份檔格式不正確或匯入失敗。") }finally{el("importBackupInput").value=""}}
 
 el("addFriendBtn").onclick=addFriend;el("friendName").onkeydown=e=>{if(e.key==="Enter")addFriend()};
-el("createEventBtn").onclick=createEvent;el("editEventMetaBtn").onclick=()=>el("eventMetaEditor").classList.remove("hidden");el("cancelEventMetaBtn").onclick=()=>el("eventMetaEditor").classList.add("hidden");el("saveEventMetaBtn").onclick=saveEventMeta;el("deleteEventBtn").onclick=deleteEvent;
+el("createEventBtn").onclick=createEvent;el("closeActiveEventBtn").onclick=closeActiveEvent;el("editEventMetaBtn").onclick=()=>el("eventMetaEditor").classList.remove("hidden");el("cancelEventMetaBtn").onclick=()=>el("eventMetaEditor").classList.add("hidden");el("saveEventMetaBtn").onclick=saveEventMeta;el("deleteEventBtn").onclick=deleteEvent;
 el("selectAllAttendeesBtn").onclick=()=>{const ev=activeEvent();ev.attendees=[...state.friends];draftParticipants=new Set(ev.attendees);saveState();renderAttendees();renderExpenseParticipants();updateDraftPreview()};el("clearAttendeesBtn").onclick=()=>{const ev=activeEvent();ev.attendees=[];draftParticipants=new Set();saveState();renderAttendees();renderExpenseParticipants();updateDraftPreview()};
 el("expenseSelectDefaultBtn").onclick=()=>{draftParticipants=new Set(activeEvent().attendees);renderExpenseParticipants();renderDiscountControls();updateDraftPreview()};el("expenseSelectAllBtn").onclick=()=>{draftParticipants=new Set(state.friends);renderExpenseParticipants();renderDiscountControls();updateDraftPreview()};
 el("splitMode").onchange=()=>{renderCustomAmountArea();if(el("splitMode").value==="custom")syncCustomTotalAmount();renderDiscountControls();updateDraftPreview()};el("expenseAmount").oninput=updateDraftPreview;el("serviceFeePercent").oninput=updateDraftPreview;el("serviceFeeBasis").onchange=updateDraftPreview;el("exchangeRate").oninput=updateDraftPreview;
@@ -278,18 +283,25 @@ el("foreignCurrencyToggle").onchange=e=>{el("foreignCurrencyArea").classList.tog
 el("settlementMode").onchange=e=>{const ev=activeEvent();if(!ev)return;ev.settlementMode=e.target.value;saveState();renderBalances()};
 el("confirmPaymentBtn").onclick=confirmPayment;el("closeImageDialog").onclick=()=>{const d=el("imageDialog"),u=d.dataset.url;if(u)URL.revokeObjectURL(u);d.close();el("imagePreview").src=""};
 el("exportBackupBtn").onclick=exportBackup;el("importBackupInput").onchange=e=>importBackup(e.target.files[0]);
-el("resetBtn").onclick=async()=>{if(!confirm("這會清除所有朋友、活動、支出、收據與付款證明，確定嗎？"))return;await clearAttachments();state=structuredClone(defaultState);saveState();cancelEditExpense();renderAll()};window.addEventListener("online",updateNetworkBadge);window.addEventListener("offline",updateNetworkBadge);
+el("resetBtn").onclick=async()=>{if(!confirm("這會清除所有朋友、活動、支出、收據與付款證明，確定嗎？"))return;await clearAttachments();state=structuredClone(defaultState);saveState();cancelEditExpense();renderAll()};window.addEventListener("online",updateNetworkBadge);window.addEventListener("offline",updateNetworkBadge);window.addEventListener("friend-split:permissions-changed",()=>renderActiveEvent());
 
 // 提供 Firebase 模組安全地讀取/套用目前 App 狀態。
 window.friendSplitApp={
-  getState:()=>structuredClone(state),
+  getState:()=>{
+    const out=structuredClone(state);
+    out.activeEventId=null;
+    return out;
+  },
   replaceState:(next,{source="external"}={})=>{
+    const keepOpenId=localActiveEventId;
     state=normalizeState(next||structuredClone(defaultState));
+    state.activeEventId=null;
     localStorage.setItem(STORAGE_KEY,JSON.stringify(state));
+    localActiveEventId=state.events.some(e=>e.id===keepOpenId)?keepOpenId:null;
     draftParticipants=new Set(activeEvent()?.attendees||[]);
     pendingSettlement=null;editExpenseId=null;editingReceiptId=null;
     renderAll();
-    if(source!=="cloud")window.dispatchEvent(new CustomEvent("friend-split:state-saved",{detail:{state:structuredClone(state),reason:`replace-${source}`}}));
+    if(source!=="cloud")window.dispatchEvent(new CustomEvent("friend-split:state-saved",{detail:{state:window.friendSplitApp.getState(),reason:`replace-${source}`}}));
   },
   storageKey:STORAGE_KEY
 };
