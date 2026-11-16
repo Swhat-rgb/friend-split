@@ -12,6 +12,7 @@ let localActiveEventId = null;
 let draftParticipants = new Set();
 let pendingSettlement = null;
 let editExpenseId = null;
+let proposalExpenseId = null;
 let editingReceiptId = null;
 
 function el(id){return document.getElementById(id)}
@@ -22,8 +23,20 @@ function today(){return new Date().toISOString().slice(0,10)}
 function localDateTimeValue(d=new Date()){const z=new Date(d.getTime()-d.getTimezoneOffset()*60000);return z.toISOString().slice(0,16)}
 function escapeHtml(v){return String(v??"").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&#039;")}
 function activeEvent(){return state.events.find(e=>e.id===localActiveEventId)||null}
-function canDeleteActiveEvent(){return window.friendSplitPermissions?.isOwner===true}
-function closeActiveEvent(){localActiveEventId=null;pendingSettlement=null;editExpenseId=null;editingReceiptId=null;renderAll()}
+function canDeleteActiveEvent(){const p=window.friendSplitPermissions||{};return p.isOwner===true||p.isAdmin===true}
+function currentActor(){
+  const p=window.friendSplitPermissions||{};
+  return {uid:p.uid||"",name:p.name||"成員",isOwner:!!p.isOwner,isAdmin:!!p.isAdmin};
+}
+function canDirectEditExpense(exp){
+  const actor=currentActor();
+  if(!actor.uid)return false;
+  if(actor.isAdmin)return true;
+  if(exp?.createdByUid)return exp.createdByUid===actor.uid;
+  return actor.isOwner; // 舊帳沒有建立者資料時，由 Owner 管理
+}
+function canDeleteExpense(exp){return canDirectEditExpense(exp)}
+function closeActiveEvent(){localActiveEventId=null;pendingSettlement=null;editExpenseId=null;proposalExpenseId=null;editingReceiptId=null;renderAll()}
 function saveState(reason="local-change"){
   localStorage.setItem(STORAGE_KEY,JSON.stringify(state));
   window.dispatchEvent(new CustomEvent("friend-split:state-saved",{detail:{state:structuredClone(state),reason}}));
@@ -35,7 +48,7 @@ function formatDateTime(iso){if(!iso)return "";const d=new Date(iso);if(Number.i
 function normalizeState(p){
   const out={...structuredClone(defaultState),...p,rateCache:p?.rateCache||{},events:p?.events||[]};
   out.activeEventId=null;
-  out.events=out.events.map(ev=>({...ev,attendees:ev.attendees||[],expenses:(ev.expenses||[]).map(x=>({...x,discountEnabled:!!x.discountEnabled,discountType:x.discountType||"amount",discountValue:x.discountValue||0,discountAmount:x.discountAmount||0,discountMode:x.discountMode||"all_proportional",discountRecipients:x.discountRecipients||[],discountAllocations:x.discountAllocations||{},serviceFeeBasis:x.serviceFeeBasis||"before_discount",shares:(x.shares||[]).map(s=>({...s,discountAmount:s.discountAmount||0,serviceFeeAmount:s.serviceFeeAmount??round2((s.amount||0)-(s.rawAmount||0)+(s.discountAmount||0))}))})),payments:ev.payments||[],settlementMode:ev.settlementMode||"optimized"}));
+  out.events=out.events.map(ev=>({...ev,attendees:ev.attendees||[],expenses:(ev.expenses||[]).map(x=>({...x,discountEnabled:!!x.discountEnabled,discountType:x.discountType||"amount",discountValue:x.discountValue||0,discountAmount:x.discountAmount||0,discountMode:x.discountMode||"all_proportional",discountRecipients:x.discountRecipients||[],discountAllocations:x.discountAllocations||{},serviceFeeBasis:x.serviceFeeBasis||"before_discount",editProposals:x.editProposals||[],shares:(x.shares||[]).map(s=>({...s,discountAmount:s.discountAmount||0,serviceFeeAmount:s.serviceFeeAmount??round2((s.amount||0)-(s.rawAmount||0)+(s.discountAmount||0))}))})),payments:ev.payments||[],settlementMode:ev.settlementMode||"optimized"}));
   return out;
 }
 function loadState(){
@@ -208,39 +221,131 @@ function addFriend(){const i=el("friendName"),name=i.value.trim();if(!name)retur
 function removeFriend(name){const used=state.events.some(ev=>(ev.expenses||[]).some(e=>e.payer===name||e.shares.some(s=>s.person===name))||(ev.payments||[]).some(p=>p.from===name||p.to===name));if(used)return alert("這個人已經出現在活動的消費或付款紀錄中，無法直接刪除。");if(!confirm(`確定要移除「${name}」嗎？`))return;state.friends=state.friends.filter(x=>x!==name);state.events.forEach(ev=>ev.attendees=(ev.attendees||[]).filter(x=>x!==name));saveState();renderAll()}
 
 function createEvent(){const name=el("newEventName").value.trim(),start=el("newEventStartDate").value,end=el("newEventEndDate").value,base=el("newEventCurrency").value;if(!name)return alert("請輸入活動名稱。");if(!start)return alert("請選擇活動開始日期。");if(end&&end<start)return alert("結束日期不能早於開始日期。");const ev={id:uid("event"),name,startDate:start,endDate:end,baseCurrency:base,attendees:[],expenses:[],payments:[],settlementMode:"optimized",createdAt:new Date().toISOString()};state.events.push(ev);state.activeEventId=null;saveState();localActiveEventId=null;el("newEventName").value="";el("newEventEndDate").value="";cancelEditExpense();renderAll();alert("活動已建立。需要記帳時，再從「活動紀錄」按「開啟」。")}
-async function deleteEvent(){const ev=activeEvent();if(!ev)return;if(!canDeleteActiveEvent())return alert("只有共享群組的建立者（Owner）可以刪除整個活動。");if(!confirm(`確定刪除「${ev.name}」？這會連同支出、收據與付款證明一起刪除。`))return;for(const e of ev.expenses||[])await deleteAttachment(e.receiptId);for(const p of ev.payments||[])await deleteAttachment(p.proofId);state.events=state.events.filter(x=>x.id!==ev.id);state.activeEventId=null;localActiveEventId=null;saveState("owner-delete-event");renderAll()}
+async function deleteEvent(){const ev=activeEvent();if(!ev)return;if(!canDeleteActiveEvent())return alert("只有共享群組的建立者（Owner）或 Developer Admin 可以刪除整個活動。");if(!confirm(`確定刪除「${ev.name}」？這會連同支出、收據與付款證明一起刪除。`))return;for(const e of ev.expenses||[])await deleteAttachment(e.receiptId);for(const p of ev.payments||[])await deleteAttachment(p.proofId);state.events=state.events.filter(x=>x.id!==ev.id);state.activeEventId=null;localActiveEventId=null;saveState("owner-delete-event");renderAll()}
 function saveEventMeta(){const ev=activeEvent(),name=el("eventName").value.trim(),start=el("eventStartDate").value,end=el("eventEndDate").value,base=el("baseCurrency").value;if(!name||!start)return alert("活動名稱與開始日期不可空白。");if(end&&end<start)return alert("結束日期不能早於開始日期。");if(base!==ev.baseCurrency&&ev.expenses.length&&!confirm("更改主要幣別不會重算既有支出，只會影響之後的新支出。仍要更改嗎？")){el("baseCurrency").value=ev.baseCurrency;return}Object.assign(ev,{name,startDate:start,endDate:end,baseCurrency:base});saveState();el("eventMetaEditor").classList.add("hidden");renderAll()}
 
 function resetExpenseForm(resetParticipants=true){
-  const ev=activeEvent();if(!ev)return;editExpenseId=null;editingReceiptId=null;el("expenseFormTitle").textContent="3. 新增消費";el("addExpenseBtn").textContent="加入這筆消費";el("cancelEditExpenseBtn").classList.add("hidden");el("expenseTitle").value="";el("expenseAmount").value="";el("categorySelect").value="餐飲";el("splitMode").value="equal";el("receiptInput").value="";el("receiptHint").textContent="";
+  const ev=activeEvent();if(!ev)return;editExpenseId=null;proposalExpenseId=null;editingReceiptId=null;el("expenseFormTitle").textContent="3. 新增消費";el("addExpenseBtn").textContent="加入這筆消費";el("cancelEditExpenseBtn").classList.add("hidden");el("expenseTitle").value="";el("expenseAmount").value="";el("categorySelect").value="餐飲";el("splitMode").value="equal";el("receiptInput").disabled=false;el("receiptInput").value="";el("receiptHint").textContent="";
   el("discountToggle").checked=false;el("discountArea").classList.add("hidden");el("discountType").value="amount";el("discountValue").value="";el("discountMode").value="all_proportional";el("discountRecipientList").innerHTML="";el("customDiscountArea").innerHTML="";
-  el("serviceFeeToggle").checked=false;el("serviceFeeArea").classList.add("hidden");el("serviceFeePercent").value=10;el("serviceFeeBasis").value="before_discount";el("foreignCurrencyToggle").checked=false;el("foreignCurrencyArea").classList.add("hidden");el("exchangeRate").value="";el("rateStatus").textContent="";el("expenseCurrency").value=ev.baseCurrency;el("expenseDateTime").value=(ev.startDate===today()?localDateTimeValue():`${ev.startDate}T12:00`);if(resetParticipants)draftParticipants=new Set(ev.attendees||[]);renderPayerOptions();renderExpenseParticipants();renderDiscountControls();updateDraftPreview()
+  el("serviceFeeToggle").checked=false;el("serviceFeeArea").classList.add("hidden");el("serviceFeePercent").value=10;el("serviceFeeBasis").value="before_discount";el("foreignCurrencyToggle").checked=false;el("foreignCurrencyArea").classList.add("hidden");el("exchangeRate").value="";el("rateStatus").textContent="";el("expenseCurrency").value=ev.baseCurrency;el("expenseDateTime").value=localDateTimeValue();if(resetParticipants)draftParticipants=new Set(ev.attendees||[]);renderPayerOptions();renderExpenseParticipants();renderDiscountControls();updateDraftPreview()
 }
-function cancelEditExpense(){editExpenseId=null;editingReceiptId=null;if(activeEvent())resetExpenseForm(true)}
+function cancelEditExpense(){editExpenseId=null;proposalExpenseId=null;editingReceiptId=null;if(activeEvent())resetExpenseForm(true)}
+
+
+function expenseChangeSummary(exp,data){
+  const changes=[];
+  if(exp.title!==data.title)changes.push(`項目：${exp.title} → ${data.title}`);
+  if(Math.abs(Number(exp.rawTotal||0)-Number(data.rawTotal||0))>.009)changes.push(`原始金額：${money(exp.rawTotal,exp.currency)} → ${money(data.rawTotal,data.currency)}`);
+  if(exp.payer!==data.payer)changes.push(`付款人：${exp.payer} → ${data.payer}`);
+  if((exp.category||"其他")!==(data.category||"其他"))changes.push(`分類：${exp.category||"其他"} → ${data.category||"其他"}`);
+  if((exp.currency||"")!==(data.currency||""))changes.push(`幣別：${exp.currency} → ${data.currency}`);
+  const oldPeople=(exp.shares||[]).map(s=>s.person).join("、"),newPeople=(data.shares||[]).map(s=>s.person).join("、");
+  if(oldPeople!==newPeople)changes.push(`分攤人員：${oldPeople||"無"} → ${newPeople||"無"}`);
+  const oldAmounts=(exp.shares||[]).map(s=>`${s.person}:${s.rawAmount}`).join("|"),newAmounts=(data.shares||[]).map(s=>`${s.person}:${s.rawAmount}`).join("|");
+  if(oldAmounts!==newAmounts)changes.push("每人分攤金額有調整");
+  if(Number(exp.serviceFeePercent||0)!==Number(data.serviceFeePercent||0))changes.push(`服務費：${exp.serviceFeePercent||0}% → ${data.serviceFeePercent||0}%`);
+  if(Number(exp.discountAmount||0)!==Number(data.discountAmount||0))changes.push(`折扣：${money(exp.discountAmount||0,exp.currency)} → ${money(data.discountAmount||0,data.currency)}`);
+  if(String(exp.occurredAt||"")!==String(data.occurredAt||""))changes.push(`消費時間：${formatDateTime(exp.occurredAt)} → ${formatDateTime(data.occurredAt)}`);
+  return changes.length?changes.join("；"):"內容有調整";
+}
+function endorseExpenseProposal(expenseId,proposalId){
+  const ev=activeEvent(),exp=ev?.expenses.find(x=>x.id===expenseId);if(!exp)return;
+  const proposal=(exp.editProposals||[]).find(p=>p.id===proposalId);if(!proposal||proposal.status!=="pending")return;
+  const actor=currentActor();if(!actor.uid)return alert("請先登入 Google。");
+  proposal.signatures=proposal.signatures||[];
+  if(proposal.signatures.some(s=>s.uid===actor.uid))return alert("你已經聯署過這個修改提案。");
+  proposal.signatures.push({uid:actor.uid,name:actor.name,signedAt:new Date().toISOString()});
+  if(proposal.signatures.length>=2){
+    const keep={id:exp.id,createdAt:exp.createdAt,createdByUid:exp.createdByUid,createdByName:exp.createdByName,receiptId:exp.receiptId,editProposals:exp.editProposals};
+    Object.assign(exp,proposal.changes,keep,{updatedAt:new Date().toISOString(),updatedByUid:actor.uid,updatedByName:actor.name});
+    proposal.status="approved";proposal.approvedAt=new Date().toISOString();
+    alert("已達 2 人聯署，修改已自動套用。");
+  }
+  saveState("expense-proposal-endorse");renderAll();
+}
 
 async function saveExpense(){
   const ev=activeEvent();if(!ev)return;const title=el("expenseTitle").value.trim(),payer=el("payerSelect").value,mode=el("splitMode").value,people=[...draftParticipants],category=el("categorySelect").value,currency=currentCurrency(),rate=getRate(),pct=currentServicePct(),occurredValue=el("expenseDateTime").value;let rawTotal=0;
   try{rawTotal=getDraftBaseAmount()}catch(e){return alert(e.message)}
   if(!title)return alert("請輸入項目名稱。");if(!(rawTotal>0))return alert("請輸入正確金額或算式。");if(!payer)return alert("請選擇付款人。");if(!people.length)return alert("至少要選一位參與者。");if(!occurredValue)return alert("請選擇消費日期時間。");if(currency!==ev.baseCurrency&&!(rate>0))return alert("請先取得或輸入正確匯率。");
   let shares;try{shares=getDraftShares(rawTotal)}catch(e){return alert(e.message)}const rawShareSum=round2(shares.reduce((s,x)=>s+x.rawAmount,0));if(mode==="custom"&&Math.abs(rawShareSum-rawTotal)>0.01)return alert(`自訂原始金額合計 ${money(rawShareSum,currency)}，必須等於原始總額 ${money(rawTotal,currency)}。`);
-  const discountAmount=round2(shares.reduce((s,x)=>s+x.discountAmount,0)),serviceFeeAmount=round2(shares.reduce((s,x)=>s+x.serviceFeeAmount,0)),amount=round2(shares.reduce((s,x)=>s+x.amount,0)),baseAmount=round2(amount*rate),newFile=el("receiptInput").files[0];let receiptId=editingReceiptId||null;
+  const discountAmount=round2(shares.reduce((s,x)=>s+x.discountAmount,0)),serviceFeeAmount=round2(shares.reduce((s,x)=>s+x.serviceFeeAmount,0)),amount=round2(shares.reduce((s,x)=>s+x.amount,0)),baseAmount=round2(amount*rate),newFile=proposalExpenseId?null:el("receiptInput").files[0];let receiptId=editingReceiptId||null;
   try{if(newFile){const old=receiptId;receiptId=await saveAttachment(newFile);if(old)await deleteAttachment(old)}}catch(e){console.warn(e);return alert("收據儲存失敗，請再試一次。")}  
   const discountRecipients=(el("discountMode").value==="selected_equal"||el("discountMode").value==="custom")?selectedDiscountRecipients():[];const discountAllocations=Object.fromEntries(shares.map(s=>[s.person,s.discountAmount]));
   const data={title,rawTotal,amount,baseAmount,payer,mode,category,currency,rate:round6(rate),discountEnabled:el("discountToggle").checked,discountType:el("discountType").value,discountValue:el("discountToggle").checked?Number(el("discountValue").value||0):0,discountAmount,discountMode:el("discountMode").value,discountRecipients,discountAllocations,serviceFeePercent:pct,serviceFeeAmount,serviceFeeBasis:currentServiceBasis(),shares:shares.map(s=>({...s,baseAmount:round2(s.amount*rate)})),receiptId,occurredAt:new Date(occurredValue).toISOString()};
-  if(editExpenseId){const idx=ev.expenses.findIndex(x=>x.id===editExpenseId);if(idx>=0)ev.expenses[idx]={...ev.expenses[idx],...data,updatedAt:new Date().toISOString()}}else ev.expenses.push({id:uid("expense"),...data,createdAt:new Date().toISOString()});
-  saveState();resetExpenseForm(true);renderAll();
+  const actor=currentActor();
+  if(proposalExpenseId){
+    const exp=ev.expenses.find(x=>x.id===proposalExpenseId);if(!exp)return alert("找不到原始消費。");
+    const proposalData={...data,receiptId:exp.receiptId};
+    exp.editProposals=exp.editProposals||[];
+    exp.editProposals.push({
+      id:uid("proposal"),proposerUid:actor.uid,proposerName:actor.name,createdAt:new Date().toISOString(),
+      summary:expenseChangeSummary(exp,proposalData),changes:proposalData,status:"pending",
+      signatures:[{uid:actor.uid,name:actor.name,signedAt:new Date().toISOString()}]
+    });
+    alert("修改提案已建立。發起人算第 1 位聯署，再有 1 位不同成員聯署後會自動套用。");
+  }else if(editExpenseId){
+    const idx=ev.expenses.findIndex(x=>x.id===editExpenseId);
+    if(idx>=0){
+      if(!canDirectEditExpense(ev.expenses[idx]))return alert("只有這筆帳的建立者或 Developer Admin 可以直接修改；其他成員請使用聯署修改。");
+      ev.expenses[idx]={...ev.expenses[idx],...data,updatedAt:new Date().toISOString(),updatedByUid:actor.uid,updatedByName:actor.name};
+    }
+  }else{
+    ev.expenses.push({id:uid("expense"),...data,createdAt:new Date().toISOString(),createdByUid:actor.uid||"",createdByName:actor.name||"成員",editProposals:[]});
+  }
+  saveState(proposalExpenseId?"expense-proposal-created":"expense-save");resetExpenseForm(true);renderAll();
 }
 
-function editExpense(id){
-  const ev=activeEvent(),exp=ev.expenses.find(x=>x.id===id);if(!exp)return;editExpenseId=id;editingReceiptId=exp.receiptId||null;el("expenseFormTitle").textContent="3. 編輯消費";el("addExpenseBtn").textContent="儲存修改";el("cancelEditExpenseBtn").classList.remove("hidden");el("expenseTitle").value=exp.title;el("expenseAmount").value=exp.rawTotal;el("payerSelect").value=exp.payer;el("categorySelect").value=exp.category||"其他";el("splitMode").value=exp.mode||"equal";el("expenseDateTime").value=localDateTimeValue(new Date(exp.occurredAt||exp.createdAt));
+function editExpense(id,asProposal=false){
+  const ev=activeEvent(),exp=ev.expenses.find(x=>x.id===id);if(!exp)return;
+  if(!asProposal&&!canDirectEditExpense(exp))return alert("只有這筆帳的建立者或 Developer Admin 可以直接修改；其他成員請使用聯署修改。");
+  editExpenseId=asProposal?null:id;proposalExpenseId=asProposal?id:null;editingReceiptId=exp.receiptId||null;
+  el("expenseFormTitle").textContent=asProposal?"3. 提出聯署修改":"3. 編輯消費";
+  el("addExpenseBtn").textContent=asProposal?"送出修改提案":"儲存修改";
+  el("cancelEditExpenseBtn").classList.remove("hidden");
+  el("expenseTitle").value=exp.title;el("expenseAmount").value=exp.rawTotal;el("payerSelect").value=exp.payer;el("categorySelect").value=exp.category||"其他";el("splitMode").value=exp.mode||"equal";el("expenseDateTime").value=localDateTimeValue(new Date(exp.occurredAt||exp.createdAt));
   el("discountToggle").checked=!!exp.discountEnabled||!!exp.discountAmount;el("discountType").value=exp.discountType||"amount";el("discountValue").value=exp.discountValue||exp.discountAmount||"";el("discountMode").value=exp.discountMode||"all_proportional";
-  el("serviceFeeToggle").checked=!!exp.serviceFeePercent;el("serviceFeeArea").classList.toggle("hidden",!exp.serviceFeePercent);el("serviceFeePercent").value=exp.serviceFeePercent||10;el("serviceFeeBasis").value=exp.serviceFeeBasis||"before_discount";const foreign=exp.currency!==ev.baseCurrency;el("foreignCurrencyToggle").checked=foreign;el("foreignCurrencyArea").classList.toggle("hidden",!foreign);el("expenseCurrency").value=exp.currency||ev.baseCurrency;el("exchangeRate").value=foreign?exp.rate:"";el("rateStatus").textContent=foreign?`使用原紀錄匯率 ${exp.rate}`:"";el("receiptInput").value="";el("receiptHint").textContent=exp.receiptId?"目前已有收據；不重新選檔就會保留原收據。":"";draftParticipants=new Set(exp.shares.map(s=>s.person));renderExpenseParticipants();if(exp.mode==="custom"){const vals=Object.fromEntries(exp.shares.map(s=>[s.person,s.rawAmount]));renderCustomAmountArea(vals)}
+  el("serviceFeeToggle").checked=!!exp.serviceFeePercent;el("serviceFeeArea").classList.toggle("hidden",!exp.serviceFeePercent);el("serviceFeePercent").value=exp.serviceFeePercent||10;el("serviceFeeBasis").value=exp.serviceFeeBasis||"before_discount";const foreign=exp.currency!==ev.baseCurrency;el("foreignCurrencyToggle").checked=foreign;el("foreignCurrencyArea").classList.toggle("hidden",!foreign);el("expenseCurrency").value=exp.currency||ev.baseCurrency;el("exchangeRate").value=foreign?exp.rate:"";el("rateStatus").textContent=foreign?`使用原紀錄匯率 ${exp.rate}`:"";el("receiptInput").disabled=asProposal;el("receiptInput").value="";el("receiptHint").textContent=asProposal?"聯署修改暫不變更收據照片。":(exp.receiptId?"目前已有收據；不重新選檔就會保留原收據。":"");draftParticipants=new Set(exp.shares.map(s=>s.person));renderExpenseParticipants();if(exp.mode==="custom"){const vals=Object.fromEntries(exp.shares.map(s=>[s.person,s.rawAmount]));renderCustomAmountArea(vals)}
   const discountVals=exp.discountAllocations||Object.fromEntries((exp.shares||[]).map(s=>[s.person,s.discountAmount||0]));renderDiscountControls(discountVals,exp.discountRecipients||[]);updateDraftPreview();el("expenseFormCard").scrollIntoView({behavior:"smooth",block:"start"})
 }
 
 function renderExpenses(){
   const ev=activeEvent(),host=el("expenseList");if(!ev.expenses.length){host.className="expense-list empty-state";host.textContent="目前還沒有任何消費。";return}host.className="expense-list";host.innerHTML="";
-  [...ev.expenses].sort((a,b)=>new Date(b.occurredAt||b.createdAt)-new Date(a.occurredAt||a.createdAt)).forEach(exp=>{const detail=exp.shares.map(s=>`${s.person} ${money(s.amount,exp.currency)}`).join("、");const row=document.createElement("div");row.className="expense-row";let meta=`${formatDateTime(exp.occurredAt||exp.createdAt)}<br>${escapeHtml(exp.payer)} 先付款 · ${escapeHtml(exp.category||"其他")} · ${exp.mode==="equal"?"平均分攤":"自訂金額"}<br>${escapeHtml(detail)}`;if(exp.discountAmount)meta+=`<br>折扣 ${money(exp.discountAmount,exp.currency)} · ${exp.discountMode==="all_proportional"?"全體依比例":exp.discountMode==="all_equal"?"全體平均":exp.discountMode==="selected_equal"?`指定 ${escapeHtml((exp.discountRecipients||[]).join("、"))}`:"自訂分配"}`;if(exp.serviceFeePercent)meta+=`<br>服務費 ${exp.serviceFeePercent}%（${(exp.serviceFeeBasis||"before_discount")==="before_discount"?"折扣前":"折扣後"}計算） ${money(exp.serviceFeeAmount??round2(exp.amount-exp.rawTotal+(exp.discountAmount||0)),exp.currency)}`;if(exp.currency!==ev.baseCurrency)meta+=`<br>${exp.currency} → ${ev.baseCurrency}，匯率 ${exp.rate}，入帳 ${money(exp.baseAmount,ev.baseCurrency)}`;row.innerHTML=`<div><h4>${escapeHtml(exp.title)}</h4><div class="expense-meta">${meta}</div></div><div class="expense-actions"><div class="amount">${money(exp.amount,exp.currency)}</div>${exp.receiptId?'<button class="attach-btn receipt-btn">看收據</button>':""}<button class="secondary edit-btn">編輯</button><button class="icon-btn delete-btn">刪除</button></div>`;row.querySelector(".receipt-btn")?.addEventListener("click",()=>viewAttachment(exp.receiptId));row.querySelector(".edit-btn").onclick=()=>editExpense(exp.id);row.querySelector(".delete-btn").onclick=async()=>{if(!confirm(`刪除「${exp.title}」？`))return;await deleteAttachment(exp.receiptId);ev.expenses=ev.expenses.filter(x=>x.id!==exp.id);if(editExpenseId===exp.id)resetExpenseForm(true);saveState();renderAll()};host.appendChild(row)})
+  [...ev.expenses].sort((a,b)=>new Date(b.occurredAt||b.createdAt)-new Date(a.occurredAt||a.createdAt)).forEach(exp=>{
+    const detail=exp.shares.map(s=>`${s.person} ${money(s.amount,exp.currency)}`).join("、");
+    const row=document.createElement("div");row.className="expense-row";
+    let meta=`${formatDateTime(exp.occurredAt||exp.createdAt)}<br>${escapeHtml(exp.payer)} 先付款 · ${escapeHtml(exp.category||"其他")} · ${exp.mode==="equal"?"平均分攤":"自訂金額"}<br>${escapeHtml(detail)}`;
+    if(exp.createdByName)meta+=`<br>建立者：${escapeHtml(exp.createdByName)}`;
+    if(exp.discountAmount)meta+=`<br>折扣 ${money(exp.discountAmount,exp.currency)} · ${exp.discountMode==="all_proportional"?"全體依比例":exp.discountMode==="all_equal"?"全體平均":exp.discountMode==="selected_equal"?`指定 ${escapeHtml((exp.discountRecipients||[]).join("、"))}`:"自訂分配"}`;
+    if(exp.serviceFeePercent)meta+=`<br>服務費 ${exp.serviceFeePercent}%（${(exp.serviceFeeBasis||"before_discount")==="before_discount"?"折扣前":"折扣後"}計算） ${money(exp.serviceFeeAmount??round2(exp.amount-exp.rawTotal+(exp.discountAmount||0)),exp.currency)}`;
+    if(exp.currency!==ev.baseCurrency)meta+=`<br>${exp.currency} → ${ev.baseCurrency}，匯率 ${exp.rate}，入帳 ${money(exp.baseAmount,ev.baseCurrency)}`;
+
+    const direct=canDirectEditExpense(exp);
+    let proposalHtml="";
+    (exp.editProposals||[]).slice().reverse().forEach(p=>{
+      const sigs=p.signatures||[],actor=currentActor(),signed=sigs.some(s=>s.uid===actor.uid);
+      const statusText=p.status==="approved"?"✅ 已通過":`📝 聯署中 ${sigs.length}/2`;
+      proposalHtml+=`<div class="proposal-box"><strong>${statusText}</strong> · ${escapeHtml(p.proposerName||"成員")} 提案<br><span>${escapeHtml(p.summary||"內容有調整")}</span>`;
+      if(p.status==="pending"){
+        proposalHtml+=`<div class="row-actions compact"><button class="secondary endorse-btn" data-pid="${p.id}" ${signed?"disabled":""}>${signed?"已聯署":"聯署"}</button></div>`;
+      }
+      proposalHtml+=`</div>`;
+    });
+
+    row.innerHTML=`<div><h4>${escapeHtml(exp.title)}</h4><div class="expense-meta">${meta}</div>${proposalHtml}</div><div class="expense-actions"><div class="amount">${money(exp.amount,exp.currency)}</div>${exp.receiptId?'<button class="attach-btn receipt-btn">看收據</button>':""}${direct?'<button class="secondary edit-btn">修改</button>':'<button class="secondary proposal-btn">聯署修改</button>'}${canDeleteExpense(exp)?'<button class="icon-btn delete-btn">刪除</button>':""}</div>`;
+    row.querySelector(".receipt-btn")?.addEventListener("click",()=>viewAttachment(exp.receiptId));
+    row.querySelector(".edit-btn")?.addEventListener("click",()=>editExpense(exp.id,false));
+    row.querySelector(".proposal-btn")?.addEventListener("click",()=>editExpense(exp.id,true));
+    row.querySelectorAll(".endorse-btn").forEach(btn=>btn.addEventListener("click",()=>endorseExpenseProposal(exp.id,btn.dataset.pid)));
+    row.querySelector(".delete-btn")?.addEventListener("click",async()=>{
+      if(!canDeleteExpense(exp))return alert("只有這筆帳的建立者或 Developer Admin 可以刪除。");
+      if(!confirm(`刪除「${exp.title}」？`))return;
+      await deleteAttachment(exp.receiptId);ev.expenses=ev.expenses.filter(x=>x.id!==exp.id);
+      if(editExpenseId===exp.id||proposalExpenseId===exp.id)resetExpenseForm(true);
+      saveState("expense-delete");renderAll()
+    });
+    host.appendChild(row)
+  })
 }
 
 function calculateBalances(){const ev=activeEvent(),b=Object.fromEntries(state.friends.map(n=>[n,0]));ev.expenses.forEach(exp=>{b[exp.payer]=round2((b[exp.payer]||0)+exp.baseAmount);exp.shares.forEach(s=>b[s.person]=round2((b[s.person]||0)-s.baseAmount))});ev.payments.forEach(p=>{b[p.from]=round2((b[p.from]||0)+p.amount);b[p.to]=round2((b[p.to]||0)-p.amount)});return b}
@@ -299,9 +404,15 @@ window.friendSplitApp={
     localStorage.setItem(STORAGE_KEY,JSON.stringify(state));
     localActiveEventId=state.events.some(e=>e.id===keepOpenId)?keepOpenId:null;
     draftParticipants=new Set(activeEvent()?.attendees||[]);
-    pendingSettlement=null;editExpenseId=null;editingReceiptId=null;
+    pendingSettlement=null;editExpenseId=null;proposalExpenseId=null;editingReceiptId=null;
     renderAll();
     if(source!=="cloud")window.dispatchEvent(new CustomEvent("friend-split:state-saved",{detail:{state:window.friendSplitApp.getState(),reason:`replace-${source}`}}));
+  },
+  clearForDeletedGroup:()=>{
+    state=structuredClone(defaultState);state.activeEventId=null;localActiveEventId=null;
+    localStorage.setItem(STORAGE_KEY,JSON.stringify(state));
+    draftParticipants=new Set();pendingSettlement=null;editExpenseId=null;proposalExpenseId=null;editingReceiptId=null;
+    renderAll();
   },
   storageKey:STORAGE_KEY
 };

@@ -12,7 +12,7 @@
   <div class="app-shell">
     <header class="topbar">
       <div>
-        <div class="eyebrow">FRIEND SPLIT · SHARED V6.3</div>
+        <div class="eyebrow">FRIEND SPLIT · SHARED V6.5</div>
         <h1>朋友分帳</h1>
         <p class="muted">以「活動」為單位保存日期、支出、結算、收據與付款證明。</p>
       </div>
@@ -40,12 +40,16 @@
       </div>
       <div class="shared-current">
         <div><strong id="currentGroupLabel">尚未選擇共享群組</strong><div id="currentInviteCode" class="muted small"></div><div id="groupMembers" class="muted small"></div></div>
-        <button id="copyInviteBtn" class="secondary hidden">複製邀請碼</button>
+        <div class="row-actions compact"><button id="copyInviteBtn" class="secondary hidden">複製邀請碼</button><button id="deleteGroupBtn" class="ghost danger hidden">刪除群組</button></div>
       </div>
       <div class="shared-grid">
         <label class="field"><span>我的共享群組</span><select id="groupSelect"><option value="">選擇共享群組</option></select></label>
         <div class="field"><span>建立新群組</span><div class="inline-form"><input id="newGroupName" placeholder="例如：屏東吃喝團"><button id="createGroupBtn">建立</button></div></div>
         <div class="field"><span>加入朋友的群組</span><div class="inline-form"><input id="joinGroupCode" placeholder="輸入 8 碼邀請碼" maxlength="8"><button id="joinGroupBtn" class="secondary">加入</button></div></div>
+      </div>
+      <div id="developerPanel" class="option-panel hidden">
+        <div class="section-head"><div><h3>Developer 管理</h3><p class="muted">開發者可查看並進入所有共享群組，直接修改或刪除，不受 Owner / 聯署限制。</p></div></div>
+        <label class="field"><span>所有共享群組</span><select id="adminGroupSelect"><option value="">選擇群組</option></select></label>
       </div>
     </section>
 
@@ -80,7 +84,7 @@
           <div class="row-actions compact">
             <button id="closeActiveEventBtn" class="ghost">關閉活動</button>
             <button id="editEventMetaBtn" class="secondary">編輯活動資料</button>
-            <button id="deleteEventBtn" class="ghost danger hidden">刪除活動（Owner）</button>
+            <button id="deleteEventBtn" class="ghost danger hidden">刪除活動（Owner/Admin）</button>
           </div>
         </div>
         <div id="eventMetaEditor" class="option-panel hidden">

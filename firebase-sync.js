@@ -15,7 +15,9 @@ import {
   doc,
   collection,
   getDoc,
+  getDocs,
   setDoc,
+  deleteDoc,
   onSnapshot,
   serverTimestamp
 } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
@@ -44,9 +46,10 @@ provider.setCustomParameters({ prompt: "select_account" });
 
 const GROUP_STORAGE_KEY = "friendSplitSharedActiveGroupV6_1";
 let currentUser = null;
+let currentIsAdmin = false;
 let activeGroupId = localStorage.getItem(GROUP_STORAGE_KEY) || "";
 let activeGroupMeta = null;
-window.friendSplitPermissions={role:"guest",isOwner:false};
+window.friendSplitPermissions={role:"guest",isOwner:false,isAdmin:false,uid:"",name:""};
 let initializedForGroup = false;
 let applyingCloudState = false;
 let lastUploadedJson = "";
@@ -64,6 +67,7 @@ const api = () => window.friendSplitApp || null;
 const groupRef = gid => doc(db,"groups",gid);
 const memberRef = (gid,uid) => doc(db,"groups",gid,"members",uid);
 const userGroupRef = (uid,gid) => doc(db,"users",uid,"groups",gid);
+const adminRef = uid => doc(db,"admins",uid);
 
 function randomInviteCode(){
   const chars="ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -80,7 +84,7 @@ function setAuthUi(user){
 function setGroupUi(meta=null){
   activeGroupMeta=meta;
   const isOwner=!!(meta&&currentUser&&meta.ownerUid===currentUser.uid);
-  window.friendSplitPermissions={role:isOwner?"owner":(meta?"member":"guest"),isOwner};
+  window.friendSplitPermissions={role:currentIsAdmin?"admin":(isOwner?"owner":(meta?"member":"guest")),isOwner,isAdmin:currentIsAdmin,uid:currentUser?.uid||"",name:currentUser?.displayName||currentUser?.email||"成員"};
   window.dispatchEvent(new CustomEvent("friend-split:permissions-changed",{detail:window.friendSplitPermissions}));
   const label=$("currentGroupLabel");
   const invite=$("currentInviteCode");
@@ -88,6 +92,7 @@ function setGroupUi(meta=null){
   if(invite) invite.textContent=meta?.inviteCode?`邀請碼：${meta.inviteCode}`:"";
   $("copyInviteBtn")?.classList.toggle("hidden",!meta?.inviteCode);
   $("forceCloudUploadBtn")?.classList.toggle("hidden",!meta);
+  $("deleteGroupBtn")?.classList.toggle("hidden",!(isOwner||currentIsAdmin));
 }
 function stopGroupListeners(){
   if(unsubscribeGroup){unsubscribeGroup();unsubscribeGroup=null;}
@@ -100,7 +105,7 @@ async function writeGroupState(state, reason="update"){
   status(navigator.onLine?"☁ 群組同步中…":"☁ 離線，待同步", navigator.onLine?"syncing":"offline");
   try{
     await setDoc(groupRef(activeGroupId),{
-      state, schemaVersion:6.3, updatedAt:serverTimestamp(), updatedAtMs:Date.now(),
+      state, schemaVersion:6.5, updatedAt:serverTimestamp(), updatedAtMs:Date.now(),
       updatedBy:currentUser.uid, updatedByName:currentUser.displayName||currentUser.email||"成員",
       lastReason:reason
     },{merge:true});
@@ -139,6 +144,66 @@ async function activateGroup(gid){
     if($("groupMembers")) $("groupMembers").textContent=names.length?`成員：${names.join("、")}`:"";
   });
 }
+
+
+async function refreshAdminGroups(){
+  const panel=$("developerPanel"),badge=$("developerBadge"),sel=$("adminGroupSelect");
+  panel?.classList.toggle("hidden",!currentIsAdmin);
+  badge?.classList.toggle("hidden",!currentIsAdmin);
+  if(!currentIsAdmin||!sel)return;
+  sel.innerHTML='<option value="">選擇群組</option>';
+  try{
+    const snap=await getDocs(collection(db,"groups"));
+    snap.forEach(d=>{
+      const data=d.data(),o=document.createElement("option");
+      o.value=d.id;
+      o.textContent=`${data.name||"未命名群組"} · ${data.inviteCode||d.id}`;
+      sel.appendChild(o);
+    });
+  }catch(err){
+    console.error("Developer groups load failed",err);
+  }
+}
+async function detectDeveloperAdmin(user){
+  currentIsAdmin=false;
+  if(!user)return false;
+  try{
+    const snap=await getDoc(adminRef(user.uid));
+    currentIsAdmin=snap.exists() && snap.data()?.active!==false;
+  }catch(err){
+    console.warn("Admin check failed",err);
+  }
+  await refreshAdminGroups();
+  return currentIsAdmin;
+}
+
+async function deleteActiveGroup(){
+  if(!currentUser||!activeGroupId||!activeGroupMeta)return;
+  if(activeGroupMeta.ownerUid!==currentUser.uid&&!currentIsAdmin)return alert("只有群組建立者（Owner）或 Developer Admin 可以刪除群組。");
+  const groupName=activeGroupMeta.name||"未命名群組";
+  if(!confirm(`你要刪除群組「${groupName}」嗎？`))return;
+  if(!confirm("你犯了跟偉鈞一樣的錯誤嗎?"))return;
+  try{
+    const gid=activeGroupId,code=activeGroupMeta.inviteCode||"";
+    const membersSnap=await getDocs(collection(db,"groups",gid,"members"));
+    stopGroupListeners();
+    if(code){try{await deleteDoc(doc(db,"invites",code))}catch(e){console.warn("刪除邀請碼失敗",e)}}
+    for(const m of membersSnap.docs){
+      try{await deleteDoc(userGroupRef(m.id,gid))}catch(e){console.warn("清除成員群組索引失敗",m.id,e)}
+      try{await deleteDoc(memberRef(gid,m.id))}catch(e){console.warn("刪除成員資料失敗",m.id,e)}
+    }
+    await deleteDoc(groupRef(gid));
+    localStorage.removeItem(GROUP_STORAGE_KEY);
+    activeGroupId="";activeGroupMeta=null;setGroupUi(null);
+    if($("groupSelect"))$("groupSelect").value="";
+    api()?.clearForDeletedGroup?.();
+    await refreshAdminGroups();
+    alert(`群組「${groupName}」已刪除。`);
+  }catch(err){
+    console.error(err);alert("刪除群組失敗：\n"+(err?.message||err));
+  }
+}
+
 async function createGroup(){
   if(!currentUser)return alert("請先登入 Google。");
   const name=($("newGroupName")?.value||"").trim(); if(!name)return alert("請輸入群組名稱。");
@@ -147,7 +212,7 @@ async function createGroup(){
     const localState=api()?.getState();
     await setDoc(groupRef(gid),{
       name, ownerUid:currentUser.uid, inviteCode:code, state:localState,
-      schemaVersion:6.3, createdAt:serverTimestamp(), updatedAt:serverTimestamp(), updatedAtMs:Date.now()
+      schemaVersion:6.5, createdAt:serverTimestamp(), updatedAt:serverTimestamp(), updatedAtMs:Date.now()
     });
     await setDoc(memberRef(gid,currentUser.uid),{
       displayName:currentUser.displayName||currentUser.email||"建立者", email:currentUser.email||"", role:"owner", inviteCode:"owner", joinedAt:serverTimestamp()
@@ -193,8 +258,10 @@ window.addEventListener("offline",()=>{if(activeGroupId)status("☁ 離線，變
 $("googleSignInBtn")?.addEventListener("click",async()=>{try{status("前往 Google 登入…","syncing");await signInWithPopup(auth,provider)}catch(err){console.error(err);alert("Google 登入失敗：\n"+(err?.message||err))}});
 $("googleSignOutBtn")?.addEventListener("click",async()=>{if(confirm("確定登出？本機資料仍會保留。"))await signOut(auth)});
 $("createGroupBtn")?.addEventListener("click",createGroup);
+$("deleteGroupBtn")?.addEventListener("click",deleteActiveGroup);
 $("joinGroupBtn")?.addEventListener("click",joinGroup);
 $("groupSelect")?.addEventListener("change",e=>{const gid=e.target.value;if(gid)activateGroup(gid).catch(err=>alert(err.message));});
+$("adminGroupSelect")?.addEventListener("change",e=>{const gid=e.target.value;if(gid)activateGroup(gid).catch(err=>alert(err.message));});
 $("copyInviteBtn")?.addEventListener("click",async()=>{const code=activeGroupMeta?.inviteCode;if(!code)return;await navigator.clipboard?.writeText(code);alert(`已複製邀請碼：${code}`)});
 $("forceCloudUploadBtn")?.addEventListener("click",async()=>{
   if(!currentUser)return alert("請先登入。"); if(!activeGroupId)return alert("請先建立或加入共享群組。");
@@ -203,8 +270,16 @@ $("forceCloudUploadBtn")?.addEventListener("click",async()=>{
 });
 
 try{await setPersistence(auth,browserLocalPersistence)}catch(err){console.warn("Auth persistence warning",err)}
-onAuthStateChanged(auth,user=>{
+onAuthStateChanged(auth,async user=>{
   currentUser=user; setAuthUi(user); stopGroupListeners();
-  if(!user){status("☁ 尚未登入","offline");setGroupUi(null);return;}
-  status("☁ 已登入，選擇共享群組","online"); listenMyGroups();
+  if(!user){
+    currentIsAdmin=false;
+    window.friendSplitPermissions={role:"guest",isOwner:false,isAdmin:false,uid:"",name:""};
+    $("developerPanel")?.classList.add("hidden");$("developerBadge")?.classList.add("hidden");
+    status("☁ 尚未登入","offline");setGroupUi(null);return;
+  }
+  window.friendSplitPermissions={role:"guest",isOwner:false,isAdmin:false,uid:user.uid,name:user.displayName||user.email||"成員"};
+  await detectDeveloperAdmin(user);
+  status(currentIsAdmin?"☁ Developer Admin 已登入":"☁ 已登入，選擇共享群組","online");
+  listenMyGroups();
 });
