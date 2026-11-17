@@ -57,6 +57,8 @@ let uploadTimer = null;
 let unsubscribeGroup = null;
 let unsubscribeUserGroups = null;
 let unsubscribeMembers = null;
+let unsubscribePokerSessions = null;
+const pokerUploadTimers = new Map();
 
 const $ = id => document.getElementById(id);
 const status = (text, kind="") => {
@@ -68,6 +70,9 @@ const groupRef = gid => doc(db,"groups",gid);
 const memberRef = (gid,uid) => doc(db,"groups",gid,"members",uid);
 const userGroupRef = (uid,gid) => doc(db,"users",uid,"groups",gid);
 const adminRef = uid => doc(db,"admins",uid);
+const pokerSessionsRef = gid => collection(db,"groups",gid,"pokerSessions");
+const pokerSessionRef = (gid,sid) => doc(db,"groups",gid,"pokerSessions",sid);
+const pokerApi = () => window.friendSplitPokerApp || null;
 
 function randomInviteCode(){
   const chars="ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -97,6 +102,8 @@ function setGroupUi(meta=null){
 function stopGroupListeners(){
   if(unsubscribeGroup){unsubscribeGroup();unsubscribeGroup=null;}
   if(unsubscribeMembers){unsubscribeMembers();unsubscribeMembers=null;}
+  if(unsubscribePokerSessions){unsubscribePokerSessions();unsubscribePokerSessions=null;}
+  pokerUploadTimers.forEach(t=>clearTimeout(t));pokerUploadTimers.clear();
   initializedForGroup=false; applyingCloudState=false; lastUploadedJson="";
 }
 async function writeGroupState(state, reason="update"){
@@ -105,7 +112,7 @@ async function writeGroupState(state, reason="update"){
   status(navigator.onLine?"☁ 群組同步中…":"☁ 離線，待同步", navigator.onLine?"syncing":"offline");
   try{
     await setDoc(groupRef(activeGroupId),{
-      state, schemaVersion:6.5, updatedAt:serverTimestamp(), updatedAtMs:Date.now(),
+      state, schemaVersion:6.8, updatedAt:serverTimestamp(), updatedAtMs:Date.now(),
       updatedBy:currentUser.uid, updatedByName:currentUser.displayName||currentUser.email||"成員",
       lastReason:reason
     },{merge:true});
@@ -143,7 +150,51 @@ async function activateGroup(gid){
     const names=[]; snapMembers.forEach(x=>names.push(x.data().displayName||x.data().email||"成員"));
     if($("groupMembers")) $("groupMembers").textContent=names.length?`成員：${names.join("、")}`:"";
   });
+  unsubscribePokerSessions=onSnapshot(pokerSessionsRef(gid),snapPoker=>{
+    const sessions=[];
+    snapPoker.forEach(d=>{
+      const x=d.data();
+      sessions.push({...x.session,id:d.id,hostUid:x.hostUid||x.session?.hostUid||"",hostName:x.hostName||x.session?.hostName||"",cloudGroupId:gid});
+    });
+    pokerApi()?.mergeCloudSessions?.(gid,sessions);
+  },err=>console.error("Poker sync error",err));
 }
+
+
+async function createPokerCloudSession(session){
+  if(!currentUser||!activeGroupId)throw new Error("尚未登入或尚未選擇共享群組");
+  const payload={...session,hostUid:currentUser.uid,hostName:currentUser.displayName||currentUser.email||"主持人",cloudGroupId:activeGroupId};
+  await setDoc(pokerSessionRef(activeGroupId,payload.id),{
+    hostUid:payload.hostUid,hostName:payload.hostName,session:payload,
+    createdAt:serverTimestamp(),updatedAt:serverTimestamp(),updatedAtMs:Date.now()
+  });
+}
+function queuePokerCloudSession(session,reason="update"){
+  if(!currentUser||!activeGroupId||!session?.id||session.cloudGroupId!==activeGroupId)return;
+  const canWrite=currentIsAdmin||session.hostUid===currentUser.uid;
+  if(!canWrite)return;
+  clearTimeout(pokerUploadTimers.get(session.id));
+  pokerUploadTimers.set(session.id,setTimeout(async()=>{
+    try{
+      const payload={...session,cloudGroupId:activeGroupId};
+      await setDoc(pokerSessionRef(activeGroupId,session.id),{
+        hostUid:session.hostUid||currentUser.uid,
+        hostName:session.hostName||currentUser.displayName||currentUser.email||"主持人",
+        session:payload,updatedAt:serverTimestamp(),updatedAtMs:Date.now(),
+        updatedBy:currentUser.uid,updatedByName:currentUser.displayName||currentUser.email||"成員",
+        lastReason:reason
+      },{merge:true});
+    }catch(err){console.error("Poker upload failed",err)}
+  },300));
+}
+window.friendSplitPokerCloud={
+  getContext:()=>({
+    uid:currentUser?.uid||"",name:currentUser?.displayName||currentUser?.email||"成員",
+    groupId:activeGroupId||"",groupName:activeGroupMeta?.name||"",isAdmin:currentIsAdmin
+  }),
+  createSession:createPokerCloudSession,
+  queueSession:queuePokerCloudSession
+};
 
 
 async function refreshAdminGroups(){
@@ -186,11 +237,15 @@ async function deleteActiveGroup(){
   try{
     const gid=activeGroupId,code=activeGroupMeta.inviteCode||"";
     const membersSnap=await getDocs(collection(db,"groups",gid,"members"));
+    const pokerSnap=await getDocs(collection(db,"groups",gid,"pokerSessions"));
     stopGroupListeners();
     if(code){try{await deleteDoc(doc(db,"invites",code))}catch(e){console.warn("刪除邀請碼失敗",e)}}
     for(const m of membersSnap.docs){
       try{await deleteDoc(userGroupRef(m.id,gid))}catch(e){console.warn("清除成員群組索引失敗",m.id,e)}
       try{await deleteDoc(memberRef(gid,m.id))}catch(e){console.warn("刪除成員資料失敗",m.id,e)}
+    }
+    for(const p of pokerSnap.docs){
+      try{await deleteDoc(pokerSessionRef(gid,p.id))}catch(e){console.warn("刪除 Poker 紀錄失敗",p.id,e)}
     }
     await deleteDoc(groupRef(gid));
     localStorage.removeItem(GROUP_STORAGE_KEY);
@@ -212,7 +267,7 @@ async function createGroup(){
     const localState=api()?.getState();
     await setDoc(groupRef(gid),{
       name, ownerUid:currentUser.uid, inviteCode:code, state:localState,
-      schemaVersion:6.5, createdAt:serverTimestamp(), updatedAt:serverTimestamp(), updatedAtMs:Date.now()
+      schemaVersion:6.8, createdAt:serverTimestamp(), updatedAt:serverTimestamp(), updatedAtMs:Date.now()
     });
     await setDoc(memberRef(gid,currentUser.uid),{
       displayName:currentUser.displayName||currentUser.email||"建立者", email:currentUser.email||"", role:"owner", inviteCode:"owner", joinedAt:serverTimestamp()

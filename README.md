@@ -102,3 +102,14 @@ V4 全功能 + Firebase Firestore 雲端同步。
 - Poker 改為獨立牌桌紀錄：可建立日期/名稱、開啟與關閉。
 - 每筆牌桌紀錄各自保存玩家設定、累積損益、進行中牌局與歷史紀錄，不再跨聚會混在一起。
 - 舊 Poker V1 本機資料若存在，首次載入會轉成「舊牌桌紀錄」。
+
+
+## V6.8 — Poker 唯讀同步
+- Poker Session 改為可同步到目前選擇的 Friend Split 共享群組。
+- 建立牌桌紀錄時，建立者的 Firebase UID 會保存為 `hostUid`，該使用者就是這筆牌桌的主持人。
+- 主持人用同一個 Google 帳號換裝置登入，仍可繼續操作。
+- 同群組其他成員可即時查看牌桌、目前回合、玩家下注狀態、累積損益與歷史紀錄，但操作按鈕會鎖定為唯讀。
+- Friend Split 群組 Owner 不會自動成為 Poker 主持人；每一筆 Poker Session 都有自己的主持人。
+- Developer Admin 仍可直接管理所有 Poker Session。
+- 未登入或未選擇共享群組時建立的 Poker Session 仍可作為本機紀錄，但不會同步給其他玩家。
+- Firebase Rules 必須更新為 `firestore-rules-v6_8.txt`。

@@ -386,7 +386,12 @@ let pokerUndoStack=[];
 
 function defaultPokerSetup(){return {entryFee:10,betCap:100,step:10,raiseLimit:1,selectedPlayers:[],extraPlayers:[]}}
 function defaultPokerState(){return {sessions:[],activeSessionId:null}}
-function normalizePokerSession(s){return {id:s.id||uid("pokersession"),name:s.name||"德州牌局",date:s.date||today(),createdAt:s.createdAt||new Date().toISOString(),setup:{...defaultPokerSetup(),...(s.setup||{})},table:s.table||null,totals:s.totals||{},history:s.history||[]}}
+function normalizePokerSession(s){return {
+  id:s.id||uid("pokersession"),name:s.name||"德州牌局",date:s.date||today(),
+  createdAt:s.createdAt||new Date().toISOString(),
+  hostUid:s.hostUid||"",hostName:s.hostName||"",cloudGroupId:s.cloudGroupId||"",
+  setup:{...defaultPokerSetup(),...(s.setup||{})},table:s.table||null,totals:s.totals||{},history:s.history||[]
+}}
 function loadPokerState(){
   try{
     const raw=localStorage.getItem(POKER_STORAGE_KEY);
@@ -399,20 +404,59 @@ function loadPokerState(){
   }catch(e){console.warn("Poker data load failed",e)}
   return defaultPokerState();
 }
-function savePokerState(){localStorage.setItem(POKER_STORAGE_KEY,JSON.stringify({...pokerState,activeSessionId:null}))}
+function savePokerState(reason="local-change",syncCloud=true){
+  localStorage.setItem(POKER_STORAGE_KEY,JSON.stringify({...pokerState,activeSessionId:null}));
+  if(syncCloud)syncActivePokerSession(reason);
+}
 function activePokerSession(){return pokerState.sessions.find(s=>s.id===pokerState.activeSessionId)||null}
 function pokerSetup(){return activePokerSession()?.setup||defaultPokerSetup()}
 function pokerTable(){return activePokerSession()?.table||null}
 function pokerMoney(n){const v=round2(Number(n||0));return `${v<0?"-$":"$"}${Math.abs(v)}`}
+function pokerCloudContext(){return window.friendSplitPokerCloud?.getContext?.()||{uid:"",name:"",groupId:"",groupName:"",isAdmin:false}}
+function pokerCanEditSession(s=activePokerSession()){
+  if(!s)return false;
+  const c=pokerCloudContext();
+  if(c.isAdmin)return true;
+  if(s.hostUid)return !!c.uid&&s.hostUid===c.uid;
+  return true; // 舊的純本機紀錄保留原本可編輯行為
+}
+function requirePokerEdit(){
+  const s=activePokerSession();
+  if(!s)return false;
+  if(pokerCanEditSession(s))return true;
+  alert(`這筆牌桌由「${s.hostName||"其他玩家"}」主持，你目前是唯讀觀看模式。`);
+  return false;
+}
+function syncActivePokerSession(reason="update"){
+  const s=activePokerSession();
+  if(!s||!s.cloudGroupId||!pokerCanEditSession(s))return;
+  window.friendSplitPokerCloud?.queueSession?.(structuredClone(s),reason);
+}
 function pushPokerUndo(){pokerUndoStack.push(JSON.stringify(pokerState));if(pokerUndoStack.length>50)pokerUndoStack.shift();el("pokerUndoBtn")?.removeAttribute("disabled")}
-function pokerUndo(){const raw=pokerUndoStack.pop();if(!raw)return;const keep=pokerState.activeSessionId;pokerState=JSON.parse(raw);pokerState.activeSessionId=keep;savePokerState();renderPokerAll();if(!pokerUndoStack.length)el("pokerUndoBtn")?.setAttribute("disabled","disabled")}
+function pokerUndo(){if(!requirePokerEdit())return;const raw=pokerUndoStack.pop();if(!raw)return;const keep=pokerState.activeSessionId;pokerState=JSON.parse(raw);pokerState.activeSessionId=keep;savePokerState();renderPokerAll();if(!pokerUndoStack.length)el("pokerUndoBtn")?.setAttribute("disabled","disabled")}
 function pokerFriends(){const s=activePokerSession();return [...new Set([...(state.friends||[]),...((s?.setup?.extraPlayers)||[])])].filter(Boolean)}
 
-function createPokerSession(){
+async function createPokerSession(){
   const name=(el("pokerSessionName").value||"").trim()||`${el("pokerSessionDate").value||today()} 德州`;
   const date=el("pokerSessionDate").value||today();
-  const s=normalizePokerSession({name,date,setup:defaultPokerSetup(),totals:{},history:[]});
-  pokerState.sessions.push(s);pokerState.activeSessionId=null;savePokerState();el("pokerSessionName").value="";renderPokerAll();
+  const c=pokerCloudContext();
+  const s=normalizePokerSession({
+    name,date,setup:defaultPokerSetup(),totals:{},history:[],
+    hostUid:c.uid||"",hostName:c.name||"",cloudGroupId:c.groupId||""
+  });
+  pokerState.sessions.push(s);pokerState.activeSessionId=null;
+  savePokerState("create-session",false);
+  el("pokerSessionName").value="";renderPokerAll();
+  if(c.uid&&c.groupId){
+    try{
+      await window.friendSplitPokerCloud?.createSession?.(structuredClone(s));
+    }catch(err){
+      console.error(err);
+      alert("牌桌已建立在本機，但雲端同步建立失敗。請確認目前已登入並選擇共享群組。");
+    }
+  }else{
+    alert("這筆牌桌目前只建立在本機。若要讓其他玩家即時查看，請先登入 Google 並選擇一個共享群組。");
+  }
 }
 function openPokerSession(id){pokerState.activeSessionId=id;pokerUndoStack=[];renderPokerAll();window.scrollTo({top:0,behavior:"smooth"})}
 function closePokerSession(){pokerState.activeSessionId=null;pokerUndoStack=[];renderPokerAll();window.scrollTo({top:0,behavior:"smooth"})}
@@ -422,19 +466,20 @@ function renderPokerSessions(){
   [...pokerState.sessions].sort((a,b)=>String(b.date).localeCompare(String(a.date))).forEach(s=>{
     const row=document.createElement("div");row.className="event-row";
     const totalHands=(s.history||[]).length;
-    row.innerHTML=`<div><div class="event-name">${escapeHtml(s.name)}</div><div class="event-sub">${escapeHtml(s.date)} · ${totalHands} 局</div></div><button class="${s.id===pokerState.activeSessionId?"secondary":""}">${s.id===pokerState.activeSessionId?"目前開啟":"開啟"}</button>`;
+    const readonly=s.hostUid&&!pokerCanEditSession(s);
+    row.innerHTML=`<div><div class="event-name">${escapeHtml(s.name)}</div><div class="event-sub">${escapeHtml(s.date)} · ${totalHands} 局${s.hostName?` · 主持人 ${escapeHtml(s.hostName)}`:""}${readonly?" · 唯讀":""}</div></div><button class="${s.id===pokerState.activeSessionId?"secondary":""}">${s.id===pokerState.activeSessionId?"目前開啟":"開啟"}</button>`;
     row.querySelector("button").addEventListener("click",()=>openPokerSession(s.id));host.appendChild(row);
   });
 }
 function renderPokerSetupPlayers(){
   const s=activePokerSession(),host=el("pokerPlayerChecklist");if(!s||!host)return;host.innerHTML="";const selected=new Set(s.setup.selectedPlayers||[]);
-  pokerFriends().forEach(name=>{const label=document.createElement("label");label.className="check-item";label.innerHTML=`<input type="checkbox" ${selected.has(name)?"checked":""}><span>${escapeHtml(name)}</span>`;label.querySelector("input").addEventListener("change",e=>{const set=new Set(s.setup.selectedPlayers||[]);if(e.target.checked)set.add(name);else set.delete(name);s.setup.selectedPlayers=[...set];savePokerState()});host.appendChild(label)});
+  pokerFriends().forEach(name=>{const label=document.createElement("label");label.className="check-item";label.innerHTML=`<input type="checkbox" ${selected.has(name)?"checked":""}><span>${escapeHtml(name)}</span>`;label.querySelector("input").disabled=!pokerCanEditSession(s);label.querySelector("input").addEventListener("change",e=>{if(!requirePokerEdit()){e.target.checked=!e.target.checked;return}const set=new Set(s.setup.selectedPlayers||[]);if(e.target.checked)set.add(name);else set.delete(name);s.setup.selectedPlayers=[...set];savePokerState("setup-player-change")});host.appendChild(label)});
 }
-function addPokerPlayer(){const s=activePokerSession();if(!s)return;const input=el("pokerNewPlayer"),name=(input.value||"").trim();if(!name)return;if(!s.setup.extraPlayers.includes(name)&&!(state.friends||[]).includes(name))s.setup.extraPlayers.push(name);if(!s.setup.selectedPlayers.includes(name))s.setup.selectedPlayers.push(name);input.value="";savePokerState();renderPokerSetupPlayers()}
+function addPokerPlayer(){if(!requirePokerEdit())return;const s=activePokerSession();if(!s)return;const input=el("pokerNewPlayer"),name=(input.value||"").trim();if(!name)return;if(!s.setup.extraPlayers.includes(name)&&!(state.friends||[]).includes(name))s.setup.extraPlayers.push(name);if(!s.setup.selectedPlayers.includes(name))s.setup.selectedPlayers.push(name);input.value="";savePokerState();renderPokerSetupPlayers()}
 function openPoker(){el("pokerPage").classList.remove("hidden");document.querySelector("header")?.classList.add("hidden");document.querySelector("main")?.classList.add("hidden");if(el("pokerSessionDate"))el("pokerSessionDate").value=today();renderPokerAll();window.scrollTo({top:0,behavior:"smooth"})}
 function closePoker(){el("pokerPage").classList.add("hidden");document.querySelector("header")?.classList.remove("hidden");document.querySelector("main")?.classList.remove("hidden");window.scrollTo({top:0,behavior:"smooth"})}
 
-function startPokerTable(){
+function startPokerTable(){if(!requirePokerEdit())return;
   const s=activePokerSession();if(!s)return alert("請先開啟一筆牌桌紀錄。");
   const entryFee=Math.max(0,Number(el("pokerEntryFee").value||0)),betCap=Math.max(1,Number(el("pokerBetCap").value||100)),step=Math.max(1,Number(el("pokerStep").value||10)),raiseLimit=Math.max(0,Math.floor(Number(el("pokerRaiseLimit").value||1))),players=[...(s.setup.selectedPlayers||[])];
   if(players.length<2)return alert("至少選擇 2 位玩家。");
@@ -443,19 +488,19 @@ function startPokerTable(){
 }
 function pokerPlayer(name){return pokerTable()?.players?.[name]||null}
 function pokerMaxCurrent(){const t=pokerTable();if(!t)return 0;return Math.max(0,...t.activePlayers.filter(n=>!pokerPlayer(n).folded).map(n=>pokerPlayer(n).current||0))}
-function adjustPoker(name,delta){const t=pokerTable(),p=pokerPlayer(name);if(!t||!p||p.folded)return;pushPokerUndo();const maxThisRound=Math.max(0,t.betCap-p.confirmed);p.current=Math.max(0,Math.min(maxThisRound,round2(p.current+delta)));savePokerState();renderPokerAll()}
-function pokerAllIn(name){const t=pokerTable(),p=pokerPlayer(name);if(!t||!p||p.folded)return;pushPokerUndo();p.current=Math.max(0,t.betCap-p.confirmed);savePokerState();renderPokerAll()}
-function pokerFollowTarget(name){const t=pokerTable(),p=pokerPlayer(name);if(!t||!p||p.folded)return;pushPokerUndo();p.current=Math.min(Math.max(0,t.betCap-p.confirmed),pokerMaxCurrent());savePokerState();renderPokerAll()}
-function pokerFollowAll(){
+function adjustPoker(name,delta){if(!requirePokerEdit())return;const t=pokerTable(),p=pokerPlayer(name);if(!t||!p||p.folded)return;pushPokerUndo();const maxThisRound=Math.max(0,t.betCap-p.confirmed);p.current=Math.max(0,Math.min(maxThisRound,round2(p.current+delta)));savePokerState();renderPokerAll()}
+function pokerAllIn(name){if(!requirePokerEdit())return;const t=pokerTable(),p=pokerPlayer(name);if(!t||!p||p.folded)return;pushPokerUndo();p.current=Math.max(0,t.betCap-p.confirmed);savePokerState();renderPokerAll()}
+function pokerFollowTarget(name){if(!requirePokerEdit())return;const t=pokerTable(),p=pokerPlayer(name);if(!t||!p||p.folded)return;pushPokerUndo();p.current=Math.min(Math.max(0,t.betCap-p.confirmed),pokerMaxCurrent());savePokerState();renderPokerAll()}
+function pokerFollowAll(){if(!requirePokerEdit())return;
   const t=pokerTable();if(!t)return;const target=pokerMaxCurrent();if(target<=0)return alert("請先設定這回合的喊注金額。");
   pushPokerUndo();t.activePlayers.filter(n=>!pokerPlayer(n).folded).forEach(name=>{const p=pokerPlayer(name);p.current=Math.min(Math.max(0,t.betCap-p.confirmed),target)});savePokerState();renderPokerAll();
 }
-function togglePokerFold(name,folded){const t=pokerTable(),p=pokerPlayer(name);if(!t||!p)return;pushPokerUndo();if(folded){p.folded=true;p.foldLoss=round2(t.entryFee+p.confirmed);p.current=0;t.roundLog.push({round:t.round,type:"fold",player:name,loss:p.foldLoss,at:new Date().toISOString()})}else{p.folded=false;p.foldLoss=null}savePokerState();renderPokerAll()}
-function confirmPokerRound(){const t=pokerTable();if(!t)return;const alive=t.activePlayers.filter(n=>!pokerPlayer(n).folded);if(alive.length<=1)return finishPokerHand(alive[0]);pushPokerUndo();const target=pokerMaxCurrent();alive.forEach(name=>{const p=pokerPlayer(name);p.confirmed=round2(Math.min(t.betCap,p.confirmed+p.current));p.current=0});t.roundLog.push({round:t.round,type:"confirm",target,at:new Date().toISOString()});if(t.round>=3){savePokerState();renderPokerAll();showPokerWinnerSelection();return}t.round+=1;savePokerState();renderPokerAll()}
+function togglePokerFold(name,folded){if(!requirePokerEdit())return;const t=pokerTable(),p=pokerPlayer(name);if(!t||!p)return;pushPokerUndo();if(folded){p.folded=true;p.foldLoss=round2(t.entryFee+p.confirmed);p.current=0;t.roundLog.push({round:t.round,type:"fold",player:name,loss:p.foldLoss,at:new Date().toISOString()})}else{p.folded=false;p.foldLoss=null}savePokerState();renderPokerAll()}
+function confirmPokerRound(){if(!requirePokerEdit())return;const t=pokerTable();if(!t)return;const alive=t.activePlayers.filter(n=>!pokerPlayer(n).folded);if(alive.length<=1)return finishPokerHand(alive[0]);pushPokerUndo();const target=pokerMaxCurrent();alive.forEach(name=>{const p=pokerPlayer(name);p.confirmed=round2(Math.min(t.betCap,p.confirmed+p.current));p.current=0});t.roundLog.push({round:t.round,type:"confirm",target,at:new Date().toISOString()});if(t.round>=3){savePokerState();renderPokerAll();showPokerWinnerSelection();return}t.round+=1;savePokerState();renderPokerAll()}
 function showPokerWinnerSelection(){const t=pokerTable();if(!t)return;const host=el("pokerWinnerButtons");host.innerHTML="";t.activePlayers.filter(n=>!pokerPlayer(n).folded).forEach(name=>{const b=document.createElement("button");b.textContent=`${name} 獲勝`;b.addEventListener("click",()=>finishPokerHand(name));host.appendChild(b)});el("pokerWinnerCard").classList.remove("hidden")}
-function finishPokerHand(winner){const s=activePokerSession(),t=pokerTable();if(!s||!t||!winner)return;const result={};let winnerGain=0;t.activePlayers.forEach(name=>{const p=pokerPlayer(name);if(name===winner)return;const loss=round2(t.entryFee+p.confirmed+(p.folded?0:p.current));result[name]=-loss;winnerGain+=loss});result[winner]=round2(winnerGain);Object.entries(result).forEach(([name,val])=>s.totals[name]=round2((s.totals[name]||0)+val));const finalPlayers={};t.activePlayers.forEach(name=>{const p=pokerPlayer(name);finalPlayers[name]={confirmed:p.confirmed,current:p.current,folded:p.folded,finalLoss:name===winner?0:Math.abs(result[name]||0)}});s.history.push({id:uid("poker"),handNo:t.handNo,winner,entryFee:t.entryFee,betCap:t.betCap,step:t.step,results:result,players:finalPlayers,roundLog:t.roundLog,endedAt:new Date().toISOString()});s.table=null;pokerUndoStack=[];savePokerState();renderPokerAll()}
-function undoLastPokerHand(){const s=activePokerSession();if(!s?.history?.length)return;const hand=s.history[s.history.length-1];if(!confirm(`撤銷第 ${hand.handNo} 局？累積損益會一起回復。`))return;Object.entries(hand.results||{}).forEach(([name,val])=>s.totals[name]=round2((s.totals[name]||0)-val));s.history.pop();savePokerState();renderPokerAll()}
-function resetCurrentPokerHand(){const s=activePokerSession();if(!s?.table)return;if(!confirm("放棄目前這一局？本局尚未結算，不會影響累積損益。"))return;s.table=null;pokerUndoStack=[];savePokerState();renderPokerAll()}
+function finishPokerHand(winner){if(!requirePokerEdit())return;const s=activePokerSession(),t=pokerTable();if(!s||!t||!winner)return;const result={};let winnerGain=0;t.activePlayers.forEach(name=>{const p=pokerPlayer(name);if(name===winner)return;const loss=round2(t.entryFee+p.confirmed+(p.folded?0:p.current));result[name]=-loss;winnerGain+=loss});result[winner]=round2(winnerGain);Object.entries(result).forEach(([name,val])=>s.totals[name]=round2((s.totals[name]||0)+val));const finalPlayers={};t.activePlayers.forEach(name=>{const p=pokerPlayer(name);finalPlayers[name]={confirmed:p.confirmed,current:p.current,folded:p.folded,finalLoss:name===winner?0:Math.abs(result[name]||0)}});s.history.push({id:uid("poker"),handNo:t.handNo,winner,entryFee:t.entryFee,betCap:t.betCap,step:t.step,results:result,players:finalPlayers,roundLog:t.roundLog,endedAt:new Date().toISOString()});s.table=null;pokerUndoStack=[];savePokerState();renderPokerAll()}
+function undoLastPokerHand(){if(!requirePokerEdit())return;const s=activePokerSession();if(!s?.history?.length)return;const hand=s.history[s.history.length-1];if(!confirm(`撤銷第 ${hand.handNo} 局？累積損益會一起回復。`))return;Object.entries(hand.results||{}).forEach(([name,val])=>s.totals[name]=round2((s.totals[name]||0)-val));s.history.pop();savePokerState();renderPokerAll()}
+function resetCurrentPokerHand(){if(!requirePokerEdit())return;const s=activePokerSession();if(!s?.table)return;if(!confirm("放棄目前這一局？本局尚未結算，不會影響累積損益。"))return;s.table=null;pokerUndoStack=[];savePokerState();renderPokerAll()}
 
 function renderPokerProfit(){const s=activePokerSession(),host=el("pokerProfitPanel");if(!host)return;if(!s){host.innerHTML="";return}const names=[...new Set([...(s.setup.selectedPlayers||[]),...Object.keys(s.totals||{})])];if(!names.length){host.innerHTML='<div class="empty-state">尚未選擇玩家。</div>';return}const rows=names.map(name=>({name,val:round2(s.totals[name]||0)})),sum=round2(rows.reduce((a,x)=>a+x.val,0));host.innerHTML=`<div class="poker-profit-list">${rows.map(x=>`<div class="poker-profit-row"><span>${escapeHtml(x.name)}</span><strong class="${x.val>0?"profit-pos":x.val<0?"profit-neg":""}">${x.val>0?"+":""}${pokerMoney(x.val)}</strong></div>`).join("")}</div><div class="poker-balance-check ${Math.abs(sum)>.009?"bad":""}">損益合計：${pokerMoney(sum)} ${Math.abs(sum)>.009?"⚠️ 資料不平衡":"✓"}</div>`}
 function renderPokerTable(){const s=activePokerSession(),t=pokerTable();if(!s)return;el("pokerSetupCard").classList.toggle("hidden",!!t);el("pokerTableArea").classList.toggle("hidden",!t&&!s.history.length);el("pokerWinnerCard").classList.add("hidden");if(!t){if(el("pokerRoundTitle"))el("pokerRoundTitle").textContent="尚未進行本局";if(el("pokerRoundMeta"))el("pokerRoundMeta").innerHTML="";if(el("pokerPlayersArea"))el("pokerPlayersArea").innerHTML='<div class="empty-state">從上方設定開始新的一局。</div>';el("pokerConfirmRoundBtn")?.setAttribute("disabled","disabled");return}el("pokerConfirmRoundBtn").removeAttribute("disabled");el("pokerRoundTitle").textContent=`第 ${t.round} / 3 回合`;const target=pokerMaxCurrent();el("pokerFollowAllBtn").textContent=target>0?`一鍵全跟到 ${pokerMoney(target)}`:"一鍵全跟";el("pokerFollowAllBtn").toggleAttribute("disabled",target<=0);el("pokerRoundMeta").innerHTML=`<div><span>入場費</span><strong>${pokerMoney(t.entryFee)}</strong></div><div><span>下注上限</span><strong>${pokerMoney(t.betCap)}</strong></div><div><span>本回合目前目標</span><strong>${pokerMoney(target)}</strong></div><div><span>調整單位</span><strong>${pokerMoney(t.step)}</strong></div>`;const host=el("pokerPlayersArea");host.innerHTML="";t.activePlayers.forEach(name=>{const p=pokerPlayer(name),remaining=Math.max(0,t.betCap-p.confirmed-p.current),card=document.createElement("div");card.className=`poker-player-card ${p.folded?"folded":""}`;const status=p.folded?`已棄權｜損失 ${pokerMoney(p.foldLoss||t.entryFee+p.confirmed)}`:`剩餘 ${pokerMoney(remaining)}`;card.innerHTML=`<div class="poker-player-head"><strong>${escapeHtml(name)}</strong><label class="poker-fold"><input type="checkbox" ${p.folded?"checked":""}><span class="fold-label">棄權</span></label></div><div class="poker-values"><div><span>已確認</span><b>${pokerMoney(p.confirmed)}</b></div><div><span>本回合</span><b>${pokerMoney(p.current)}</b></div><div><span>${p.folded?"狀態":"可下注"}</span><b>${status}</b></div></div><div class="poker-controls"><button class="ghost minus" ${p.folded?"disabled":""}>− ${pokerMoney(t.step)}</button><button class="secondary follow" ${p.folded?"disabled":""}>跟到 ${pokerMoney(target)}</button><button class="secondary plus" ${p.folded?"disabled":""}>＋ ${pokerMoney(t.step)}</button><button class="ghost allin" ${p.folded||remaining<=0?"disabled":""}>ALL IN</button></div>`;card.querySelector("input").addEventListener("change",e=>togglePokerFold(name,e.target.checked));card.querySelector(".minus").addEventListener("click",()=>adjustPoker(name,-t.step));card.querySelector(".plus").addEventListener("click",()=>adjustPoker(name,t.step));card.querySelector(".allin").addEventListener("click",()=>pokerAllIn(name));card.querySelector(".follow").addEventListener("click",()=>pokerFollowTarget(name));host.appendChild(card)});el("pokerConfirmRoundBtn").textContent=t.round<3?`確認第 ${t.round} 回合 → 下一回合`:"確認第 3 回合 → 選擇贏家"}
@@ -463,9 +508,25 @@ function renderPokerHistory(){const s=activePokerSession(),host=el("pokerHistory
 function renderPokerAll(){
   renderPokerSessions();const s=activePokerSession();el("pokerActiveSession")?.classList.toggle("hidden",!s);
   if(!s)return;
+  const canEdit=pokerCanEditSession(s),ctx=pokerCloudContext();
   el("pokerActiveSessionTitle").textContent=s.name;el("pokerActiveSessionDate").textContent=s.date;
+  if(el("pokerRoleStatus")){
+    if(s.hostUid){
+      el("pokerRoleStatus").innerHTML=canEdit
+        ? `<span class="badge">${ctx.isAdmin&&s.hostUid!==ctx.uid?"🛠 Developer Admin 管理":"🎛 主持人模式"}</span><span class="muted">主持人：${escapeHtml(s.hostName||"未命名")}</span>`
+        : `<span class="badge">👁 唯讀觀看</span><span class="muted">主持人：${escapeHtml(s.hostName||"未命名")}</span>`;
+    }else{
+      el("pokerRoleStatus").innerHTML='<span class="badge">📱 本機紀錄</span>';
+    }
+  }
   el("pokerEntryFee").value=s.setup.entryFee;el("pokerBetCap").value=s.setup.betCap;el("pokerStep").value=s.setup.step;el("pokerRaiseLimit").value=s.setup.raiseLimit;
+  ["pokerEntryFee","pokerBetCap","pokerStep","pokerRaiseLimit","pokerNewPlayer"].forEach(id=>{if(el(id))el(id).disabled=!canEdit});
+  ["pokerAddPlayerBtn","startPokerBtn","pokerUndoBtn","pokerResetHandBtn","pokerFollowAllBtn","pokerConfirmRoundBtn","pokerUndoHandBtn"].forEach(id=>{if(el(id)&&!canEdit)el(id).disabled=true});
   renderPokerSetupPlayers();renderPokerProfit();renderPokerTable();renderPokerHistory();
+  if(!canEdit){
+    el("pokerPlayersArea")?.querySelectorAll("button,input").forEach(n=>n.disabled=true);
+    el("pokerWinnerButtons")?.querySelectorAll("button").forEach(n=>n.disabled=true);
+  }
 }
 
 el("openPokerBtn")?.addEventListener("click",openPoker);
@@ -491,7 +552,22 @@ el("foreignCurrencyToggle").onchange=e=>{el("foreignCurrencyArea").classList.tog
 el("settlementMode").onchange=e=>{const ev=activeEvent();if(!ev)return;ev.settlementMode=e.target.value;saveState();renderBalances()};
 el("confirmPaymentBtn").onclick=confirmPayment;el("closeImageDialog").onclick=()=>{const d=el("imageDialog"),u=d.dataset.url;if(u)URL.revokeObjectURL(u);d.close();el("imagePreview").src=""};
 el("exportBackupBtn").onclick=exportBackup;el("importBackupInput").onchange=e=>importBackup(e.target.files[0]);
-el("resetBtn").onclick=async()=>{if(!confirm("這會清除所有朋友、活動、支出、收據與付款證明，確定嗎？"))return;await clearAttachments();state=structuredClone(defaultState);saveState();cancelEditExpense();renderAll()};window.addEventListener("online",updateNetworkBadge);window.addEventListener("offline",updateNetworkBadge);window.addEventListener("friend-split:permissions-changed",()=>renderActiveEvent());
+el("resetBtn").onclick=async()=>{if(!confirm("這會清除所有朋友、活動、支出、收據與付款證明，確定嗎？"))return;await clearAttachments();state=structuredClone(defaultState);saveState();cancelEditExpense();renderAll()};window.addEventListener("online",updateNetworkBadge);window.addEventListener("offline",updateNetworkBadge);window.addEventListener("friend-split:permissions-changed",()=>{renderActiveEvent();renderPokerAll()});
+
+// 提供 Firebase 模組同步 Poker 牌桌。
+window.friendSplitPokerApp={
+  mergeCloudSessions:(groupId,sessions)=>{
+    const activeId=pokerState.activeSessionId;
+    const locals=pokerState.sessions.filter(s=>!s.cloudGroupId||s.cloudGroupId!==groupId);
+    const cloud=(sessions||[]).map(normalizePokerSession);
+    pokerState.sessions=[...locals,...cloud];
+    pokerState.activeSessionId=pokerState.sessions.some(s=>s.id===activeId)?activeId:null;
+    savePokerState("cloud-merge",false);
+    renderPokerAll();
+  },
+  getSession:id=>structuredClone(pokerState.sessions.find(s=>s.id===id)||null),
+  rerender:()=>renderPokerAll()
+};
 
 // 提供 Firebase 模組安全地讀取/套用目前 App 狀態。
 window.friendSplitApp={
