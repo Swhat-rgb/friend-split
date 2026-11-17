@@ -12,7 +12,7 @@
   <div class="app-shell">
     <header class="topbar">
       <div>
-        <div class="eyebrow">FRIEND SPLIT · SHARED V6.6.1</div>
+        <div class="eyebrow">FRIEND SPLIT · SHARED V6.7</div>
         <h1>朋友分帳</h1>
         <p class="muted">以「活動」為單位保存日期、支出、結算、收據與付款證明。</p>
       </div>
@@ -200,7 +200,31 @@
   <dialog id="imageDialog"><div class="image-dialog-card"><button id="closeImageDialog" class="ghost">關閉</button><img id="imagePreview" alt="附件預覽" /></div></dialog>
 
   <section id="pokerPage" class="poker-page hidden">
-      <div class="poker-topbar"><div><div class="eyebrow">FRIEND SPLIT · POKER</div><h1>德州撲克快速記帳</h1></div><button id="closePokerBtn" class="ghost">返回分帳</button></div>
+    <div class="poker-topbar">
+      <div><div class="eyebrow">FRIEND SPLIT · POKER</div><h1>德州撲克快速記帳</h1></div>
+      <button id="closePokerBtn" class="ghost">返回分帳</button>
+    </div>
+
+    <div class="card card-wide">
+      <div class="section-head">
+        <div><h2>牌桌紀錄</h2><p class="muted">每次聚會建立一筆獨立紀錄，損益與每局歷史不會混在一起。</p></div>
+      </div>
+      <div class="expense-grid two-col">
+        <label class="field"><span>紀錄名稱</span><input id="pokerSessionName" placeholder="例如：11/17 德州"></label>
+        <label class="field"><span>日期</span><input id="pokerSessionDate" type="date"></label>
+      </div>
+      <div class="row-actions"><button id="createPokerSessionBtn">＋ 建立牌桌紀錄</button></div>
+      <div id="pokerSessionList" class="event-list"></div>
+    </div>
+
+    <div id="pokerActiveSession" class="hidden">
+      <div class="card card-wide">
+        <div class="section-head">
+          <div><div class="eyebrow">目前牌桌紀錄</div><h2 id="pokerActiveSessionTitle"></h2><p id="pokerActiveSessionDate" class="muted"></p></div>
+          <div class="row-actions compact"><button id="closePokerSessionBtn" class="ghost">關閉紀錄</button></div>
+        </div>
+      </div>
+
       <div id="pokerSetupCard" class="card card-wide">
         <div class="section-head"><div><h2>牌桌設定</h2><p class="muted">玩家預設帶入目前朋友名單；回合數固定 3 回合。</p></div></div>
         <div class="expense-grid">
@@ -210,18 +234,25 @@
           <label class="field"><span>每回合加碼次數</span><input id="pokerRaiseLimit" type="number" min="0" step="1" value="1"></label>
         </div>
         <div class="option-panel"><strong>選擇玩家</strong><div id="pokerPlayerChecklist" class="check-list"></div><div class="inline-form" style="margin-top:10px"><input id="pokerNewPlayer" placeholder="臨時玩家名稱"><button id="pokerAddPlayerBtn" type="button" class="secondary">＋ 新增玩家</button></div></div>
-        <div class="row-actions"><button id="startPokerBtn">開始牌桌</button></div>
+        <div class="row-actions"><button id="startPokerBtn">開始新的一局</button></div>
       </div>
+
       <div id="pokerTableArea" class="hidden">
         <div class="poker-summary-grid">
           <div class="card"><div class="section-head"><div><div class="eyebrow">即時損益</div><h2>目前玩家損益</h2></div></div><div id="pokerProfitPanel"></div></div>
           <div class="card"><div class="section-head"><div><div class="eyebrow">本局狀態</div><h2 id="pokerRoundTitle">第 1 / 3 回合</h2></div></div><div id="pokerRoundMeta" class="poker-round-meta"></div><div class="row-actions compact"><button id="pokerUndoBtn" class="ghost" disabled>復原上一動作</button><button id="pokerResetHandBtn" class="ghost danger">放棄本局</button></div></div>
         </div>
-        <div class="card card-wide"><div class="section-head"><div><h2>快速操作</h2><p class="muted">本回合下注在確認前都屬暫定；棄權會立即結算前面已確認的金額。</p></div></div><div id="pokerPlayersArea" class="poker-player-grid"></div><div class="row-actions poker-round-actions"><button id="pokerConfirmRoundBtn">確認第 1 回合 → 下一回合</button></div></div>
-        <div id="pokerWinnerCard" class="card card-wide hidden"><div class="section-head"><div><h2>選擇本局贏家</h2><p class="muted">選擇後會自動結算本局並寫入歷史紀錄。</p></div></div><div id="pokerWinnerButtons" class="row-actions"></div></div>
-        <div class="card card-wide"><div class="section-head"><div><div class="eyebrow">牌桌紀錄</div><h2>歷史紀錄</h2></div><button id="pokerUndoHandBtn" class="ghost" disabled>撤銷上一局</button></div><div id="pokerHistory"></div></div>
+        <div class="card card-wide">
+          <div class="section-head"><div><h2>快速操作</h2><p class="muted">先調整喊注者金額；不跟的人直接勾「棄權」，其餘玩家可按一次「一鍵全跟」。</p></div></div>
+          <div class="row-actions poker-fast-actions"><button id="pokerFollowAllBtn" class="secondary">一鍵全跟</button></div>
+          <div id="pokerPlayersArea" class="poker-player-grid"></div>
+          <div class="row-actions poker-round-actions"><button id="pokerConfirmRoundBtn">確認第 1 回合 → 下一回合</button></div>
+        </div>
+        <div id="pokerWinnerCard" class="card card-wide hidden"><div class="section-head"><div><h2>選擇本局贏家</h2><p class="muted">選擇後會自動結算本局並寫入這筆牌桌紀錄。</p></div></div><div id="pokerWinnerButtons" class="row-actions"></div></div>
+        <div class="card card-wide"><div class="section-head"><div><div class="eyebrow">牌桌紀錄</div><h2>本次歷史紀錄</h2></div><button id="pokerUndoHandBtn" class="ghost" disabled>撤銷上一局</button></div><div id="pokerHistory"></div></div>
       </div>
-    </section>
+    </div>
+  </section>
 
   <script src="app.js"></script>
   <script type="module" src="firebase-sync.js"></script>
