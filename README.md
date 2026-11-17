@@ -88,3 +88,9 @@ V4 全功能 + Firebase Firestore 雲端同步。
 - 累積損益面板即時統計，並檢查全體合計是否為 0。
 - 歷史紀錄保存每局最終結果，可展開查看。
 - Poker Alpha 目前使用本機 localStorage 保存，尚未接 Firestore 群組同步。
+
+
+## V6.6.1 — Poker hotfix
+- 修正 Poker HTML 將 `\n` 顯示在頁面上的問題。
+- 修正 Poker JavaScript 被錯誤插入 `renderAll()` 內，導致按鈕無反應/重複初始化的問題。
+- Poker DOM 現在會先建立，再載入 app.js，事件只綁定一次。
